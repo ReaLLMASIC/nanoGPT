@@ -108,6 +108,10 @@ def parse_args():
         ],
     )
 
+    # MOE
+    model_group.add_argument('--use_mixture_of_experts', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--num_experts', type=int, default=16, help="number of experts if mixture of experts flag is set")
+
     # POSITIONAL EMBEDDING VARIATIONS
     model_group.add_argument('--use_rotary_embeddings', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--rope_variant", type=str, default="rope", choices=["shortrope", "rope"])
