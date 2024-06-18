@@ -11,6 +11,7 @@ import seaborn as sns
 import torch
 import tiktoken
 from rich import print
+from collections import OrderedDict
 from torch.nn import functional as F
 
 from model import GPT, GPTConfig
@@ -20,6 +21,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
     parser.add_argument("--device", type=str, required=True, help="Device to run inference (e.g., 'cpu', 'cuda', 'cuda:0', 'cuda:1')")
     parser.add_argument("--out_dir", type=str, required=True, help="Directory to load checkpoint from")
+    parser.add_argument("--quant_weights_file", type=str, default=None, help="File to export the quantized weights and scale factor")
+    parser.add_argument("--visualize_weights_dir", type=str, default=None, help="Folder to save heatmaps of attention weights for all layers")
     parser.add_argument("--init_from", type=str, default="resume", help="Either 'resume' (from an out_dir) or a GPT-2 variant (e.g., 'gpt2-xl')")
     parser.add_argument("--start", type=str, default="\n", help="Start text for generation. Can specify a file using 'FILE:prompt.txt'")
     parser.add_argument("--num_samples", type=int, default=3, help="Number of inference streams to draw")
@@ -37,7 +40,6 @@ def parse_args():
     parser.add_argument('--chart_type', type=str, default='heatmap', choices=['heatmap', 'barchart'], help="Type of chart to display: 'heatmap' or 'barchart'")
     parser.add_argument('--block_size', type=int, default=None, help="Block size for context length, default is model's block size")
     parser.add_argument('--sym_rot_num_angles', type=int, default=None, help="Number of angles for symmetrical rotary embedding")
-
     return parser.parse_args()
 
 
@@ -87,6 +89,52 @@ def save_args(args, out_dir):
     with open(os.path.join(out_dir, 'args.json'), 'w') as f:
         json.dump(vars(args), f, indent=4)
 
+def save_quantized_weights(state_dict, out_file):
+    to_save = OrderedDict()
+    for k, v in list(state_dict.items()):
+        if k.endswith("binarized_weight") or k.endswith("binarization_bias"):
+            to_save[k] = v.cpu().numpy()
+        if k.endswith("quantized_bias") or k.endswith("bias_norm") or k.endswith("quantized_weight") or k.endswith("weight_norm"):
+            to_save[k] = v.cpu().numpy()
+
+    with open(f"{out_file}.pkl", 'wb') as f:
+        pickle.dump(to_save, f)
+
+def visualize_weights(weights_dir, out_file, n_layers):
+    filename = f"{out_file}.pkl"
+    
+    with open(filename, 'rb') as f:
+        weights = pickle.load(f)
+    print(weights.keys())
+    #print(weights.values())
+    for key, value in weights.items():
+        print(key)
+        print(value.shape)
+    
+    for i in range(n_layers):
+        plt.rcParams["figure.figsize"] = [11, 3.5]
+        plt.rcParams["figure.autolayout"] = True
+        fig, (ax1, ax2, ax3) = plt.subplots(ncols=3)
+
+        if f"transformer.h.{i}.attn.c_attn_q.binarized_weight" in weights:
+            q_key = f"transformer.h.{i}.attn.c_attn_q.binarized_weight"
+            k_key = f"transformer.h.{i}.attn.c_attn_k.binarized_weight"
+            v_key = f"transformer.h.{i}.attn.c_attn_v.binarized_weight"
+        if f"transformer.h.{i}.attn.c_attn_q.quantized_weight" in weights:
+            q_key = f"transformer.h.{i}.attn.c_attn_q.quantized_weight"
+            k_key = f"transformer.h.{i}.attn.c_attn_k.quantized_weight"
+            v_key = f"transformer.h.{i}.attn.c_attn_v.quantized_weight"
+        sns.heatmap(weights[q_key], ax=ax1)
+        sns.heatmap(weights[k_key], ax=ax2)
+        sns.heatmap(weights[v_key], ax=ax3)
+        ax1.set_title(f"Heatmap of Query Weights for Layer {i}")
+        ax2.set_title(f"Heatmap of Key Weights for Layer {i}")
+        ax3.set_title(f"Heatmap of Value Weights for Layer {i}")
+        #save to local dir
+        #create a dir if it does not exist
+        os.makedirs(weights_dir, exist_ok=True)
+        plt.savefig(f"{weights_dir}/layer_{i}_weights.png")
+    
 
 def main():
     args = parse_args()
@@ -115,7 +163,11 @@ def main():
         for k, v in list(state_dict.items()):
             if k.startswith(unwanted_prefix):
                 state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-        model.load_state_dict(state_dict)
+
+        if args.quant_weights_file:
+            save_quantized_weights(state_dict, args.quant_weights_file)
+
+        model.load_state_dict(state_dict, strict=False)
     else:
         model = GPT.from_pretrained(args.init_from, dict(dropout=0.0))
 
@@ -123,6 +175,12 @@ def main():
     model.to(args.device)
     if args.compile:
         model = torch.compile(model)
+
+    if args.visualize_weights_dir:
+        if not args.quant_weights_file:
+            print("visualization requires weight file input")
+            return
+        visualize_weights(args.visualize_weights_dir, args.quant_weights_file, model.config.n_layer)
 
     if args.block_size:
         model.update_block_size(args.block_size)
