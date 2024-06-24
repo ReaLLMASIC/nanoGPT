@@ -28,6 +28,9 @@ def parse_args():
     training_group = parser.add_argument_group('training_group')
     logging_group = parser.add_argument_group('logging_group')
 
+    # Export args
+    training_group.add_argument('--export_embedding', default=None, type=str, help='Path to export the embedding table as a .npy file')
+
     # I/O args
     training_group.add_argument('--out_dir', default='out', type=str)
     training_group.add_argument('--eval_interval', default=250, type=int)
@@ -324,6 +327,9 @@ class Trainer:
 
         self.setup()
         self.stats = initialize_statistics(self.args.n_layer, self.args.n_head)
+
+    def export_embedding_table(self, file_path):
+        self.raw_model.export_embedding_table(file_path)
 
     def setup(self):
         # Setup DDP
@@ -1024,6 +1030,10 @@ class Trainer:
             import wandb
             wandb.log({"finished": True})
             wandb.finish()
+
+        # export embedding table to npy file at end of training
+        if self.args.export_embedding:
+            self.export_embedding_table(self.args.export_embedding)
 
 def main():
     args, model_group, training_group, logging_group = parse_args()
