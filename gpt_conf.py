@@ -8,6 +8,7 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_kv_group: int = 12
+    sharing_factor: int = 1
     n_embd: int = 768
     dropout: float = 0.0
     window_size: int = 128

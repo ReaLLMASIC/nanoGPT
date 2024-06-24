@@ -100,6 +100,8 @@ class CausalSelfAttention(nn.Module):
         self.c_attn_k = nn.Linear(config.n_embd, self.kv_dim, bias=config.bias)
         self.c_attn_v = nn.Linear(config.n_embd, self.kv_dim, bias=config.bias)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.sharing_factor = config.sharing_factor
+        self.n_layer = config.n_layer
         # regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -164,11 +166,26 @@ class CausalSelfAttention(nn.Module):
                                         .view(1, 1, config.block_size, config.block_size))
 
 
-    def forward(self, x):
+    def forward(self, x, stored_k=None, stored_v=None, block_count=0, kv_cache_table=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         q = self.c_attn_q(x)
-        k = self.c_attn_k(x)
-        v = self.c_attn_v(x)
+        ########CLA related modification#############
+        assert self.sharing_factor != 0
+        assert self.sharing_factor <= self.n_layer
+        if stored_k is not None and stored_v is not None and (block_count % self.sharing_factor) != 0:
+            # print("using stored k and v")
+            # print("block count: ", block_count)
+            k = stored_k
+            v = stored_v
+        else:
+            # print("not using stored k and v")
+            #x shape [5, 3, 128]
+            # print("block count: ", block_count)
+            # print("x shape: ", x.shape)
+            # print(x)
+            #
+            k = self.c_attn_k(x)
+            v = self.c_attn_v(x)
 
         if self.rotary_emb_q is not None:
             q = self.rotary_emb_q(q)
@@ -246,7 +263,7 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y
+        return y, k, v
 
 
 class MLP(nn.Module):
@@ -318,23 +335,27 @@ class Block(nn.Module):
         else:
             self.mlp = mlp
 
-    def forward(self, x):
-        def custom_forward(*inputs):
+    def forward(self, x, stored_k=None, stored_v=None, block_count=0):
+        def custom_forward(*inputs, stored_k=None, stored_v=None, block_count=0):
             x = inputs[0]
             if self.use_post_ln:
                 if self.use_parallel_mlp:
-                    x = self.ln_1(x + self.attn(x) + self.mlp(x))
+                    attn_output, new_k, new_v = self.attn(x, stored_k, stored_v, block_count)
+                    x = self.ln_1(x + attn_output + self.mlp(x))
                 else:
-                    x = self.ln_1(x + self.attn(x))
+                    attn_output, new_k, new_v = self.attn(x, stored_k, stored_v, block_count)
+                    x = self.ln_1(x + attn_output)
                     x = self.ln_2(x + self.mlp(x))
             else:
                 if self.use_parallel_mlp:
                     ln_1 = self.ln_1(x)
-                    x = x + self.attn(ln_1) + self.mlp(ln_1)
+                    attn_output, new_k, new_v = self.attn(x, stored_k, stored_v, block_count)
+                    x = x +attn_output + self.mlp(ln_1)
                 else:
-                    x = x + self.attn(self.ln_1(x))
+                    attn_output, new_k, new_v = self.attn(self.ln_1(x), stored_k, stored_v, block_count)
+                    x = x + attn_output
                     x = x + self.mlp(self.ln_2(x))
-            return x
+            return x, new_k, new_v
 
         if self.use_gradient_checkpointing and x.requires_grad:
             return checkpoint.checkpoint(custom_forward, x, use_reentrant=False)
@@ -444,12 +465,17 @@ class GPT(nn.Module):
           x = self.transformer.drop(tok_emb)
 
         x.requires_grad_(True)  # Ensure requires_grad is True
-
+        k_cache = None
+        v_cache = None
+        block_count = 0
         for block in self.transformer.h:
             if self.config.use_gradient_checkpointing:
                 x = checkpoint.checkpoint(block, x, use_reentrant=False)
             else:
-                x = block(x)
+                x, k, v = block(x, stored_k = k_cache, stored_v = v_cache, block_count = block_count)
+                k_cache = k
+                v_cache = v
+                block_count += 1
 
         x = self.transformer.ln_f(x)
 
