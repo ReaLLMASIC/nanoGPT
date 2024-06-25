@@ -1,3 +1,6 @@
 [submodule "modules/llama.cpp"]
 	path = modules/llama.cpp
 	url = https://github.com/ggerganov/llama.cpp
+[submodule "openfasoc/platforms"]
+	path = openfasoc/platforms
+	url = https://github.com/idea-fasoc/platforms
