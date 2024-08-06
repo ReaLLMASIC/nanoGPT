@@ -179,6 +179,7 @@ class CausalSelfAttention(nn.Module):
             window_mask = torch.triu(window_mask, diagonal=-self.window_size)
             window_mask = self.bias[:,:,:T,:T] * window_mask
 
+        """
         if self.gate:
             if self.n_kv_group == self.n_head:
                 Gating = nn.Linear(self.n_embd, self.n_embd, bias=True, device=x.device)
@@ -197,7 +198,7 @@ class CausalSelfAttention(nn.Module):
                 q = q * gate_q
                 k = k * gate_kv
                 v = v * gate_kv
-
+        """
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, n_h, T, hs)
         k = k.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
         v = v.view(B, T, self.n_kv_group, C // self.n_head).transpose(1, 2) # (B, n_kv, T, hs)
@@ -235,6 +236,22 @@ class CausalSelfAttention(nn.Module):
                 att = self.softmax_layer_attn(att)
             else:
                 att = F.softmax(att, dim=-1)
+            
+
+            def modified_sigmoid(x, threshold=-0.5):
+                sigmoid_output = 1 / (1 + torch.exp(-x))
+                modified_output = torch.where(x < threshold, torch.tensor(0.0, device=x.device), sigmoid_output)
+                return modified_output
+            if self.gate:
+                gate_fn = torch.sigmoid
+                #To try modified_sigmoid
+                """
+                 gate_fn = modified_sigmoid
+                """
+
+                alpha = nn.Linear(self.n_embd, self.n_head, bias=True).to(x.device)
+                gate_mul = gate_fn(alpha(x)).view(B, self.n_head, T, 1)
+                att = att * gate_mul
 
             att = self.attn_dropout(att)
             if self.n_head != self.n_kv_group:
