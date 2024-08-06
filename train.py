@@ -53,6 +53,7 @@ def parse_args():
     model_group.add_argument('--n_layer', default=6, type=int)
     model_group.add_argument('--n_head', default=6, type=int)
     model_group.add_argument('--n_kv_group', default=6, type=int)
+    model_group.add_argument('--sharing_factor', default=1, type=int)
     model_group.add_argument('--n_embd', default=384, type=int)
     model_group.add_argument('--dropout', default=0.2, type=float)
     model_group.add_argument('--use_post_ln', default=False, action=argparse.BooleanOptionalAction)
@@ -632,6 +633,109 @@ class Trainer:
                 "mfu": running_mfu*100,
             })
 
+    
+    def plot_statistics(self):
+            statistics_to_plot = []
+            timestamp = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime())
+            directory_path = os.path.join(self.args.out_dir, 'images')
+            os.makedirs(directory_path, exist_ok=True)
+            statistics_to_plot = [self.args.statistic]
+            if self.args.statistic  == "all_stats":
+                statistics_to_plot = ['input_mean', 'input_median', 'input_stdev', 'input_max', 'input_min',
+                                  'output_mean', 'output_median', 'output_stdev', 'output_max', 'output_min']
+            elif self.args.statistic == 'input_all':
+                statistics_to_plot = ['input_mean', 'input_median', 'input_stdev', 'input_max', 'input_min']
+            elif self.args.statistic == 'output_all':
+                statistics_to_plot = ['output_mean', 'output_median', 'output_stdev', 'output_max', 'output_min']
+            for stat in statistics_to_plot:
+                parts = stat.split('_')
+                data_type = parts[0]  # 'input' or 'output'
+                stat_type = parts[1]  # 'mean', 'median', 'stdev', 'max', 'min'
+
+                # to decide whether to use the input or output statistics
+                stat_prefix = 'o_' if data_type == 'output' else ''
+
+                # draw the plot
+                if self.args.graph_type == 'plot' or self.args.graph_type == 'all':
+                    fig = go.Figure()
+                    plt.figure(figsize=(10, 6))
+                    for layer_idx, stats_per_layer in enumerate(self.stats[stat_prefix + stat_type]):
+                        for head_idx, data in enumerate(stats_per_layer):
+                            fig.add_trace(go.Scatter(
+                                x=list(range(len(data))),
+                                y=data,
+                                mode='lines',
+                                name=f'Layer {layer_idx + 1} Head {head_idx + 1}'
+                            ))
+                            plt.plot(data, label=f'Layer {layer_idx + 1} Head {head_idx + 1}')
+
+                    # add titles and legend to Plotly
+                    fig.update_layout(
+                        title=f'Change in {stat_type.title()} Values for {data_type.capitalize()} During Training',
+                        xaxis_title='Training Iteration',
+                        yaxis_title=f'{stat_type.title()} of {data_type.capitalize()}',
+                        legend_title='Head/Layer'
+                    )
+                    fig.write_html(f'{directory_path}/{data_type}_{stat_type}_changes_plotly_{timestamp}.html')
+                    fig.write_image(f'{directory_path}/{data_type}_{stat_type}_changes_plotly_{timestamp}.png')
+
+                    # add titles and lengend to Matplotlib
+                    plt.title(f'Change in {stat_type.title()} Values for {data_type.capitalize()} During Training')
+                    plt.xlabel('Training Iteration')
+                    plt.ylabel(f'{stat_type.title()} of {data_type.capitalize()}')
+                    plt.legend(title='Head/Layer')
+                    plt.grid(True)
+                    plt.savefig(f'{directory_path}/{data_type}_{stat_type}_changes_plot_{timestamp}.png')
+                    plt.close()
+
+                if self.args.graph_type == 'heatmap' or self.args.graph_type == 'all':
+                    # create a heatmap
+                    plt.figure(figsize=(10, 6))
+
+                    # create ylabels
+                    y_labels = []
+                    # Reduce first two dimensions to 1D
+                    # combing layer_idx and head_idx
+                    for layer_idx, stats_per_layer in enumerate(self.stats[stat_prefix + stat_type]):
+                        for head_idx, data in enumerate(stats_per_layer):
+                            y_labels.append(f"Layer {layer_idx} Head {head_idx}")
+                    #data is the value of #iter
+                    # create xlabels
+                    num_iters = len(data)
+                    unit_size = num_iters // 10
+                    x_labels = [i*unit_size for i in range(10)]
+
+                    # create plot_data
+                    plot_data = []
+                    for layer_idx, stats_per_layer in enumerate(self.stats[stat_prefix + stat_type]):
+                        for head_idx, data in enumerate(stats_per_layer):
+                            plot_data.append([])
+                            for i in x_labels:
+                                plot_data[-1].append(data[i])
+                    plot_data = np.array(plot_data)
+                    
+                    ######
+                    fig, ax = plt.subplots()
+                    im = ax.imshow(plot_data)
+                    # Name the x and y axis
+                    ax.set_xticks(np.arange(len(x_labels)), labels=x_labels)
+                    ax.set_yticks(np.arange(len(y_labels)), labels=y_labels)
+                    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+                    ax.set_xlabel("Number of Iterations", fontweight="bold")
+                    
+                    # Create a colorbar
+                    cbar = ax.figure.colorbar(im, ax=ax)
+                    cbar.ax.set_ylabel(stat_type, rotation=-90, va="bottom")
+
+                    ax.set_title(f"Heatmap of {data_type} {stat_type}")
+                    plt.savefig(f'{directory_path}/{data_type}_{stat_type}_heatmap_{timestamp}.png')
+                    plt.close()
+
+                    #Create boxplot
+
+
+
+
     def create_box_plot(self, plot_data, y_labels, timestamp, data_type, stat_type):
         directory_path = os.path.join(self.args.out_dir, 'images')
         os.makedirs(directory_path, exist_ok=True)
@@ -672,6 +776,7 @@ class Trainer:
                 parts = stat.split('_')
                 data_type = parts[0]  # 'input' or 'output'
                 stat_type = parts[1]  # 'mean', 'median', 'stdev', 'max', 'min'
+
 
                 # to decide whether to use the input or output statistics
                 stat_prefix = 'o_' if data_type == 'output' else ''
