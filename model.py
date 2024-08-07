@@ -11,6 +11,7 @@ import math
 import inspect
 import sys
 import re
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -398,6 +399,11 @@ class GPT(nn.Module):
 
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+
+    def export_embedding_table(self, file_path):
+        embedding_table = self.transformer.wte.weight.detach().cpu().numpy()
+        np.save(file_path, embedding_table)
+        print(f"Embedding table saved to {file_path}")
 
     def get_num_params(self, non_embedding=True):
         """
