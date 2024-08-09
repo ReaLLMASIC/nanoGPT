@@ -4,6 +4,7 @@ import requests
 import argparse
 from tqdm import tqdm
 from bs4 import BeautifulSoup
+import random
 
 
 def download_file(url, filename):
@@ -31,6 +32,8 @@ def emit_json_contents(
     required_key,
     skip_empty,
     exclude,
+    randomize_order,
+    randomize_entries,
 ):
     print(f"Emitting contents from {json_path} to {output_text_file}")
     with open(json_path, "r") as f:
@@ -40,13 +43,12 @@ def emit_json_contents(
 
     print(f"Loaded {len(data)} items from {json_path}")
 
-    skip_item = False
     excluded_pairs = {}
     if exclude:
-        for pair in args.exclude:
+        for pair in exclude:
             for i in range(0, len(pair), 2):
                 key = pair[i]
-                value = pair[i+1]
+                value = pair[i + 1]
                 excluded_pairs[key] = value
 
     with open(output_text_file, "w") as output_file:
@@ -55,19 +57,28 @@ def emit_json_contents(
             if required_key and item.get(required_key, "") == "":
                 print(f"Skipping item due to empty required key: {required_key}")
                 continue
+
+            if randomize_order:
+                random.shuffle(include_keys)
+
+            if randomize_entries:
+                keys_values = list(zip(include_keys, value_prefixes))
+                random.shuffle(keys_values)
+                include_keys, value_prefixes = zip(*keys_values)
+
             for key, prefix in zip(include_keys, value_prefixes):
                 key = key.strip("'\"")
                 key = key.rstrip()
                 if key in item:
                     if skip_empty and item[key] == "":
                         continue  # skip empty items if activated
+                    skip_item = False
                     for i_key, i_value in item.items():
                         if (i_key in excluded_pairs) and (i_value == excluded_pairs[i_key]):
-                            skip_item=True
-                        if skip_item:
+                            skip_item = True
                             break
                     if skip_item:
-                        continue
+                        break
 
                     if prev_item_written:
                         output_file.write("\n")
@@ -75,6 +86,8 @@ def emit_json_contents(
                     content_line = f"{prefix}{item[key]}"
                     output_file.write(content_line.strip())
                     prev_item_written = True
+            output_file.write("\n")
+
 
 
 def find_file_links(url):
@@ -115,7 +128,9 @@ def main(
     required_key,
     skip_empty,
     exclude,
-    direct_json_input
+    direct_json_input,
+    randomize_order,
+    randomize_entries,
 ):
     if direct_json_input is not None:
         emit_json_contents(
@@ -126,6 +141,8 @@ def main(
             required_key,
             skip_empty,
             exclude,
+            randomize_order,
+            randomize_entries,
             )
     else:
         file_links = find_file_links(url)
@@ -154,6 +171,8 @@ def main(
                 required_key,
                 skip_empty,
                 exclude,
+                randomize_order,
+                randomize_entries,
             )
 
 
@@ -218,6 +237,18 @@ if __name__ == "__main__":
         default=None,
         help="skip download and process with manual json or jsonl input",
     )
+    parser.add_argument(
+        "-R",
+        "--randomize_order",
+        action="store_true",
+        help="randomize order of fields with labels in the output txt file",
+    )
+    parser.add_argument(
+        "-E",
+        "--randomize_entries",
+        action="store_true",
+        help="randomize order of entries only",
+    )
 
     args = parser.parse_args()
     main(
@@ -230,4 +261,6 @@ if __name__ == "__main__":
         args.skip_empty,
         args.exclude,
         args.direct_json_input,
+        args.randomize_order,
+        args.randomize_entries,
     )
