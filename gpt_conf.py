@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field, asdict, fields
 from typing import List
 import json
-
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -133,10 +132,37 @@ class GPTConfig:
     ## Embedding Quantizations
     quantize_wte: bool = False
     quantize_wpe: bool = False
-    quantization_wte_method: str = "affine_quant"
-    quantization_wte_bits: int = 8
-    quantization_wpe_method: str = "affine_quant"
-    quantization_wpe_bits: int = 8
+    quantize_wte_method: str = "affine_quant"
+    quantize_wte_bits: int = 8
+    quantize_wpe_method: str = "affine_quant"
+    quantize_wpe_bits: int = 8
+
+    ## Activation Quantizations
+    activations_quant_method: str = "affine_quant"
+    quantize_attn_act: bool = False
+    quantize_attn_act_bits: int = 8
+    quantize_attn_act_input: bool = False
+    quantize_attn_act_input_bits: int = None
+    quantize_attn_act_qk_mult_input: bool = False
+    quantize_attn_act_qk_mult_input_bits: int = None
+    quantize_attn_act_softmax_input: bool = False
+    quantize_attn_act_softmax_input_bits: int = None
+    quantize_attn_act_pv_mult_input: bool = False
+    quantize_attn_act_pv_mult_input_bits: int = None
+    quantize_attn_act_pv_mult_output: bool = False
+    quantize_attn_act_pv_mult_output_bits: int = None
+    quantize_attn_act_output: bool = False
+    quantize_attn_act_output_bits: int = None
+    quantize_mlp_act: bool = False
+    quantize_mlp_act_bits: int = 8
+    quantize_mlp_act_input: bool = False
+    quantize_mlp_act_input_bits: int = None
+    quantize_mlp_act_activation_input: bool = False
+    quantize_mlp_act_activation_input_bits: int = None
+    quantize_mlp_act_activation_output: bool = False
+    quantize_mlp_act_activation_output_bits: int = None
+    quantize_mlp_act_output: bool = False
+    quantize_mlp_act_output_bits: int = None
 
     @classmethod
     def from_json(cls, filename: str):
