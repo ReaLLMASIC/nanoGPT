@@ -3,12 +3,12 @@ from typing import List
 import json
 @dataclass
 class GPTConfig:
-    block_size: int = 1024
+    block_size: int = 256
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
-    n_head: int = 12
-    n_kv_group: int = 12
-    n_embd: int = 768
+    n_layer: int = 6
+    n_head: int = 6
+    n_kv_group: int = 6
+    n_embd: int = 384
 
     # Steering Vectors
     ## Where to intercept
@@ -156,7 +156,7 @@ class GPTConfig:
     fire_outermost_sigma: bool = False
 
     # Structuring Options, remember to compile the model
-    use_post_ln: bool = True
+    use_post_ln: bool = False
 
     # Layernorm Alternatives and Options
     norm_variant_attn: str = "rmsnorm"
