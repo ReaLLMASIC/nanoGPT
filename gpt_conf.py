@@ -7,7 +7,7 @@ class GPTConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 6
     n_head: int = 6
-    n_kv_group: int = 6
+    n_kv_group: int = None
     n_embd: int = 384
 
     # Steering Vectors
@@ -38,8 +38,8 @@ class GPTConfig:
     export_scale_matrices_npz: str = None
     export_scale_matrices_each_eval: bool = False
 
-    dropout: float = 0.0
-    window_size: int = 128
+    dropout: float = 0.2
+    window_size: int = None
     gate: bool = False
     use_moe: bool = False
     moe_layer_freq: int = 2
