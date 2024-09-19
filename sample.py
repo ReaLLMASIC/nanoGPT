@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import pickle
+import time
 from contextlib import nullcontext
 from datetime import datetime
 
@@ -134,11 +135,16 @@ def calculate_validation_loss(model, val_data, block_size, eval_iters, device, d
     model.eval()
     losses = []
     with torch.no_grad():
+        total_time = 0
         for _ in range(eval_iters):
             X, Y = get_batch(val_data,  block_size, device)
             with torch.amp.autocast(device_type=device, dtype=dtype):
+                start = time.perf_counter()
                 logits, loss = model(X, Y)
+                end = time.perf_counter()
+                total_time += (end - start)
             losses.append(loss.item())
+    print(f"Elapsed time: {total_time} seconds")
     return np.mean(losses)
 
 def main():
