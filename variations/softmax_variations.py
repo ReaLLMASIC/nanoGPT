@@ -478,6 +478,25 @@ class SigSoftmax(nn.Module):
 
         return numerator / denominator
 
+class SigmoidMax(nn.Module):
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.sigmoid = nn.Sigmoid()
+        self.sigmoidmax_divisor = config.sigmoidmax_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+
+        result = self.sigmoid(x) / self.sigmoidmax_divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
 class ReLUMax(nn.Module):
     def __init__(self, config, dim=-1):
         super().__init__()
@@ -489,6 +508,24 @@ class ReLUMax(nn.Module):
     def forward(self, x):
 
         result = self.relumax(x) / self.relumax_divisor
+
+        # divide by sequence length
+        if self.div_by_seq_len:
+            seq_len = x.shape[self.dim]
+            result = result / seq_len
+
+        return result
+
+class ReLU2Max(nn.Module):
+    def __init__(self, config, dim=-1):
+        super().__init__()
+        self.dim = dim
+        self.relu2max_divisor = config.relu2max_divisor
+        self.div_by_seq_len = config.div_by_seq_len
+
+    def forward(self, x):
+
+        result = torch.relu(x) ** 2 / self.relu2max_divisor
 
         # divide by sequence length
         if self.div_by_seq_len:
@@ -553,6 +590,8 @@ softmax_dictionary = {
     "strongermax": Strongermax,
     "sigsoftmax": SigSoftmax,
     "relumax": ReLUMax,
+    "relu2max": ReLU2Max,
+    "sigmoidmax": SigmoidMax,
     "softplus": Softplus,
     "squareplus": Squareplus,
 }

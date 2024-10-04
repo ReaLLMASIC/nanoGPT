@@ -82,8 +82,9 @@ for variant in softmax_variants:
             # model init
             gptconf = GPTConfig(
                 block_size = block_size, # how far back does the model look? i.e. context size
-                n_layer = 6, n_head = 12, n_embd = 768, # size of the model
+                n_layer = 3, n_head = 12, n_embd = 768, # size of the model
                 softmax_variant_attn = variant,
+                disable_flash_attention = True,
                 strongermax_use_xmax = True,
                 strongermax_sum_to_1 = True,
                 dropout = 0, # for determinism
@@ -176,7 +177,7 @@ for variant in softmax_variants:
     for block_size in block_sizes:
         ln1_ln2_row.append(f"{ln1_ln2_timing_results[variant][block_size]:.4f}")
         forward_pass_row.append(f"{forward_pass_timing_results[variant][block_size]:.4f}")
-    
+
     ln1_ln2_table.add_row(*ln1_ln2_row)
     forward_pass_table.add_row(*forward_pass_row)
 
