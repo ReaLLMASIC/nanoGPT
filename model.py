@@ -26,6 +26,7 @@ from gpt_conf import GPTConfig
 import torch.utils.checkpoint as checkpoint
 
 # Variations
+from variations.lsv_variations import lsv_dictionary
 from variations.softmax_variations import softmax_dictionary
 from variations.norm_variations import norm_dictionary
 from variations.position_encoding_variations import QuantizedEmbedding, RotaryEmbedding, SymmetricalOverlapAngularPositions, FIRE
@@ -157,10 +158,10 @@ class CausalSelfAttention(nn.Module):
         # Embedding
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.window_size = config.window_size
         self.n_embd = config.n_embd
         self.gate = config.gate
         self.use_fire_embeddings = None
+        self.disable_flash_attention = config.disable_flash_attention
         if config.use_fire_embeddings:
             self.use_fire_embeddings = config.use_fire_embeddings
             if fire_pos_enc is not None:
@@ -183,42 +184,9 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
-        # Softmax Variant Selection
-        self.softmax_variant_attn = config.softmax_variant_attn
-        if self.softmax_variant_attn == "softmax":
-            # Enable flash attention, which is compatible with 'softmax'
-            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        else:
-            # Remove flash attention (only compatible with 'softmax')
-            self.flash = False
-            # Set softmax_layer_attn to custom softmax alternative
-            self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
-
-        if self.window_size is not None:
-            # TODO: look into supporting sliding window attn for flash attn
-            self.flash = False
-
-        if self.n_kv_group != self.n_head:
-            self.flash = False
-
-        if self.use_fire_embeddings:
-            self.flash = False
-
-        # Can't use flash attention if we want to manually quantize most input/output activations in attn
-        for key, val in self.quantization_attn_dict.items():
-            if key.startswith("quantize_") and val == True:
-                self.flash = False
-                break
-
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
-
-
         # Sliding window size
         self.window_size = config.window_size
+        print(f"sliding window size: {self.window_size}")
 
         # Gating
         self.gate = config.gate
@@ -252,8 +220,10 @@ class CausalSelfAttention(nn.Module):
         if self.softmax_variant_attn == "softmax":
             # Enable flash attention, which is compatible with 'softmax'
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            print("setting flash attn")
         else:
             # Remove flash attention (only compatible with 'softmax')
+            print("flash attention removed due to softmax alternative")
             self.flash = False
             # Set softmax_layer_attn to custom softmax alternative
             self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
@@ -261,18 +231,25 @@ class CausalSelfAttention(nn.Module):
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
             self.flash = False
+            print("flash attention removed due to windowed attention")
 
         if self.n_kv_group != self.n_head:
             self.flash = False
+            print("flash attention removed due to GQA")
 
         if self.use_fire_embeddings:
             self.flash = False
+            print("flash attention removed due to FIRE")
 
         # Can't use flash attention if we want to manually quantize most input/output activations in attn
         for key, val in self.quantization_attn_dict.items():
             if key.startswith("quantize_") and val == True:
                 self.flash = False
+                print("flash attention removed due to Quantization")
                 break
+
+        if self.disable_flash_attention:
+            self.flash = False
 
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -575,6 +552,18 @@ class GPT(nn.Module):
         self.n_embd_wte = config.n_embd_wte
         self.n_embd_wte_scale_tying = config.n_embd_wte_scale_tying
 
+        # Learned Steering Vectors
+        self.use_lsv = config.use_lsv
+        self.lsv_index = config.lsv_index
+        self.lsv_dataset_num = config.lsv_dataset_num
+
+        if config.lsv_dataset_num is not None and config.use_lsv:
+            self.num_datasets = config.lsv_dataset_num
+            print(config.lsv_variant)
+            self.lsv_variant = config.lsv_variant
+            self.lsv_matrix = lsv_dictionary[self.lsv_variant](config)
+
+        # Configure wte, with optional quantization and factoring
         if config.quantize_wte:
             if config.n_embd_wte:
                 # If factorization is set
@@ -769,6 +758,9 @@ class GPT(nn.Module):
 
         x.requires_grad_(True)  # Ensure requires_grad is True
 
+        if self.use_lsv and self.config.apply_lsv_at_layer_idx == 0:
+            x = self.lsv_matrix(x)
+
         layer = 1
         for block in self.transformer.h:
             # Propagate tokens through layers
@@ -776,6 +768,11 @@ class GPT(nn.Module):
                 x = checkpoint.checkpoint(block, x, use_reentrant=self.config.recompute_backward_pass)
             else:
                 x = block(x)
+
+            # Intercept for Learned Steering Vectors
+            if self.use_lsv and layer == self.config.apply_lsv_at_layer_idx:
+                x = self.lsv_matrix(x)
+                # x = self.apply_learned_vector_to_layer_output(x)
 
             # Intercept for Steering Vectors
             if self.config.apply_vector_at_layer_idx is not None and layer == self.config.apply_vector_at_layer_idx:
@@ -801,6 +798,45 @@ class GPT(nn.Module):
             loss = None
 
         return logits, loss
+
+    def set_lsv_scaling_factor(self, factor):
+        self.config.apply_vector_scaling_factor = factor
+
+    def get_lsv_scaling_factor(self):
+        return self.config.apply_vector_scaling_factor
+
+    def set_lsv_index(self, index):
+        self.lsv_matrix.update_lsv_index(index)
+
+    def freeze_non_lsv_parameters(self):
+        """Freeze all parameters except for lsv_matrix if lsv_focused_training is enabled."""
+
+        print("Freezing all parameters except for lsv_matrix")
+
+        # Freeze all parameters by setting requires_grad to False
+        for name, param in self.named_parameters():
+            if name != "lsv_matrix":
+                param.requires_grad = False
+            else:
+                param.requires_grad = True  # Ensure lsv_matrix can still be trained
+
+    def apply_learned_vector_to_layer_output(self, x):
+        """Conditionally add a vector based on dataset index to the output of a specific layer."""
+
+        # Use one-hot vector for the dataset and multiply by the learned parameter matrix
+        one_hot_vector = torch.zeros(self.lsv_matrix.size(0), device=x.device)
+        one_hot_vector[self.lsv_index] = 1.0
+
+        # Multiply the one-hot vector by the learned parameter matrix
+        selected_vector = torch.matmul(one_hot_vector, self.lsv_matrix)
+
+        # print(self.lsv_matrix.size())
+        # print(selected_vector.size())
+        # Add the selected parameter vector to the output
+        # print(x.size())
+        x = x + selected_vector
+
+        return x
 
     def apply_vector_to_layer_output(self, x):
         """Conditionally add a vector from a file to the output of a specific layer."""

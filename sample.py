@@ -51,6 +51,10 @@ def parse_args():
     parser.add_argument('--steering_vector_scaling_factor', type=float, default=1.0, help="Scaling factor to apply after subtracting vectors")
     parser.add_argument('--apply_to_layer_idx', type=int, default=None, help="Layer index at which to apply the resulting vector")
 
+    # Leanred Steering Vector Related
+    parser.add_argument('--use_lsv', default=False, action=argparse.BooleanOptionalAction)
+    parser.add_argument('--lsv_size',  type=int, default=1, help="Number of vectors to test")
+
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
@@ -192,6 +196,7 @@ def main():
             save_quantized_data(state_dict, args.quantization_data_file)
 
         model.load_state_dict(state_dict, strict=False)
+
     else:
         # Need to create a completely "default" GPTConfig and overwrite using model_variations
         gptconf = GPTConfig()
@@ -298,11 +303,14 @@ def main():
     if args.interactive:
         interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_string, decode, encode)
     else:
-        x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
         # Run generation
         with torch.no_grad():
             with ctx:
                 for k in range(args.num_samples):
+                    if args.use_lsv:
+                        model.set_lsv_index(k % args.lsv_size)
+                        print("vector", k % args.lsv_size)
+                    x = torch.tensor(start_ids, dtype=torch.long, device=args.device)[None, ...]
                     block_size = args.block_size if args.block_size else model.config.block_size
                     for step in range(args.max_new_tokens):
                         idx_cond = x if x.size(1) <= block_size else x[:, -block_size:]
