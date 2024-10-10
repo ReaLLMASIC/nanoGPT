@@ -287,6 +287,10 @@ def parse_args():
     model_group.add_argument( "--fire_init_L", type=float, default=512.0, help="init_L: initial value of threshold L in FIRE (fixed values without L_multiplier)")
     model_group.add_argument( "--fire_outermost_sigma", type=bool, default=False, action=argparse.BooleanOptionalAction, help="whether or not adding outermost sigma in mlp in FIRE")
 
+    # ATTN VARIATIONS
+    model_group.add_argument( "--attn_variant", type=str, default=None, choices=["performer"])
+    model_group.add_argument( "--performer_features", type=int, default=256)
+
     # SOFTMAX VARIATIONS
     softmax_variations = [
         "saturatingconsmax",

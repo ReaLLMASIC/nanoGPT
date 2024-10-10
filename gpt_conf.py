@@ -10,6 +10,12 @@ class GPTConfig:
     n_kv_group: int = 12
     n_embd: int = 768
 
+    # Attention Variants
+    attn_variant: str = None
+
+    ## Performer
+    performer_features: int = 256
+
     # Steering Vectors
     ## Where to intercept
     apply_vector_at_layer_idx: int = None

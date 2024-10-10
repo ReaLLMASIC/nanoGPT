@@ -1,5 +1,5 @@
 """
-Full definition of a GPT Language Model, all of it in this single file.
+
 References:
 1) the official GPT-2 TensorFlow implementation released by OpenAI:
 https://github.com/openai/gpt-2/blob/master/src/model.py
@@ -247,6 +247,8 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
+
+
         # Softmax Variant Selection
         self.softmax_variant_attn = config.softmax_variant_attn
         if self.softmax_variant_attn == "softmax":
@@ -257,6 +259,16 @@ class CausalSelfAttention(nn.Module):
             self.flash = False
             # Set softmax_layer_attn to custom softmax alternative
             self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
+
+        self.performer_attn = None
+        if config.attn_variant == "performer":
+            from performer_pytorch import FastAttention
+            self.performer_attn = FastAttention(
+                    dim_heads = config.n_embd // config.n_head,
+                    nb_features = config.performer_features,
+                    causal = True
+                    )
+            self.flash = False
 
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
@@ -331,6 +343,8 @@ class CausalSelfAttention(nn.Module):
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+        elif self.performer_attn is not None:
+            y = self.performer_attn(q, k, v)
         else:
             if self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input"]:
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_q_input_bits"]
