@@ -157,10 +157,10 @@ class CausalSelfAttention(nn.Module):
         # Embedding
         self.n_embd = config.n_embd
         self.dropout = config.dropout
-        self.window_size = config.window_size
         self.n_embd = config.n_embd
         self.gate = config.gate
         self.use_fire_embeddings = None
+        self.disable_flash_attention = config.disable_flash_attention
         if config.use_fire_embeddings:
             self.use_fire_embeddings = config.use_fire_embeddings
             if fire_pos_enc is not None:
@@ -183,42 +183,9 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb_q = RotaryEmbedding(config, size=config.n_embd // self.n_head)
                 self.rotary_emb_k = RotaryEmbedding(config, size=config.n_embd // self.n_head)
 
-        # Softmax Variant Selection
-        self.softmax_variant_attn = config.softmax_variant_attn
-        if self.softmax_variant_attn == "softmax":
-            # Enable flash attention, which is compatible with 'softmax'
-            self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        else:
-            # Remove flash attention (only compatible with 'softmax')
-            self.flash = False
-            # Set softmax_layer_attn to custom softmax alternative
-            self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
-
-        if self.window_size is not None:
-            # TODO: look into supporting sliding window attn for flash attn
-            self.flash = False
-
-        if self.n_kv_group != self.n_head:
-            self.flash = False
-
-        if self.use_fire_embeddings:
-            self.flash = False
-
-        # Can't use flash attention if we want to manually quantize most input/output activations in attn
-        for key, val in self.quantization_attn_dict.items():
-            if key.startswith("quantize_") and val == True:
-                self.flash = False
-                break
-
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
-
-
         # Sliding window size
         self.window_size = config.window_size
+        print(f"sliding window size: {self.window_size}")
 
         # Gating
         self.gate = config.gate
@@ -252,8 +219,10 @@ class CausalSelfAttention(nn.Module):
         if self.softmax_variant_attn == "softmax":
             # Enable flash attention, which is compatible with 'softmax'
             self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+            print("setting flash attn")
         else:
             # Remove flash attention (only compatible with 'softmax')
+            print("flash attention removed due to softmax alternative")
             self.flash = False
             # Set softmax_layer_attn to custom softmax alternative
             self.softmax_layer_attn = softmax_dictionary[config.softmax_variant_attn](config)
@@ -261,18 +230,25 @@ class CausalSelfAttention(nn.Module):
         if self.window_size is not None:
             # TODO: look into supporting sliding window attn for flash attn
             self.flash = False
+            print("flash attention removed due to windowed attention")
 
         if self.n_kv_group != self.n_head:
             self.flash = False
+            print("flash attention removed due to GQA")
 
         if self.use_fire_embeddings:
             self.flash = False
+            print("flash attention removed due to FIRE")
 
         # Can't use flash attention if we want to manually quantize most input/output activations in attn
         for key, val in self.quantization_attn_dict.items():
             if key.startswith("quantize_") and val == True:
                 self.flash = False
+                print("flash attention removed due to Quantization")
                 break
+
+        if self.disable_flash_attention:
+            self.flash = False
 
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")

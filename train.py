@@ -84,6 +84,11 @@ def parse_args():
     training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
+    # Add a new argument for specifying multiple datasets
+    training_group.add_argument('--dataset_list', default=None, nargs='+', type=str, help="If not None, training will be done from a list of datasets to train on, e.g. --dataset_list shakespeare wikitext103 openwebtext")
+    training_group.add_argument('--dataset_sampling_probs', default=None, nargs='+', type=float, help="Sampling probabilities for each dataset in dataset_list.")
+
+
     # Model args
     model_group.add_argument('--block_size', default=256, type=int)
     model_group.add_argument('--n_layer', default=6, type=int)
@@ -148,6 +153,7 @@ def parse_args():
             "mish",
             "prelu",
             "relu6",
+            "relu",
             "rrelu",
             "selu",
             "sigmoid",
@@ -295,6 +301,7 @@ def parse_args():
         "consmax_quan",
         "polymax",
         "relumax",
+        "relu2max",
         "sigmoidmax",
         "vpolymax",
         "exppolymax",
@@ -310,6 +317,7 @@ def parse_args():
     ## Selection of softmax variation for attention and output layers
     model_group.add_argument("--softmax_variant_attn", type=str, default="softmax", choices=softmax_variations)
     model_group.add_argument("--softmax_variant_output", type=str, default="softmax", choices=softmax_variations)
+    model_group.add_argument("--disable_flash_attention", default=False, action=argparse.BooleanOptionalAction, help="manual setting to disable flash attention")
 
     ## Custom Softmax Variation Options
     ### ConSmax and SaturatingConSmax Options
@@ -334,6 +342,9 @@ def parse_args():
 
     ### ReLUMax Options
     model_group.add_argument("--relumax_divisor", type=float, default=256.0)
+
+    ### ReLU2Max Options
+    model_group.add_argument("--relu2max_divisor", type=float, default=256.0)
 
     ### SimgoidMax Options
     model_group.add_argument("--sigmoidmax_divisor", type=float, default=256.0)
@@ -692,22 +703,80 @@ class Trainer:
             print(f"Error copying file: {e}")
 
     def load_data(self):
-        if self.model_args['vocab_size'] is None:
-            sys.exit("Error: no vocab size specified")
-        elif self.model_args['vocab_size'] == 100277:
-            # cl100k_base, vocab size 100277, requires np.uint32
-            self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
-            self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
-        else:
-            # all other tokenations so far require only np.uint16
-            self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
-            self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
 
-    def get_batch(self, split):
-        data = self.train_data if split == 'train' else self.val_data
+        if self.args.dataset_list is None:
+
+            if self.model_args['vocab_size'] is None:
+                sys.exit("Error: no vocab size specified")
+            elif self.model_args['vocab_size'] == 100277:
+                # cl100k_base, vocab size 100277, requires np.uint32
+                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
+                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
+            else:
+                # all other tokenations so far require only np.uint16
+                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
+        else:
+            self.train_data_dict = {}
+            self.val_data_dict = {}
+
+            for dataset in self.args.dataset_list:
+                train_data = None
+                val_data = None
+                meta_path = os.path.join('data', dataset, 'meta.pkl')
+                if not os.path.exists(meta_path):
+                    sys.exit(f"Error: Meta file not found at {meta_path}")
+
+                with open(meta_path, 'rb') as f:
+                    meta = pickle.load(f)
+                    vocab_size = meta.get('vocab_size', None)
+                    if vocab_size:
+                        self.model_args['vocab_size'] = vocab_size
+
+                # Load train and val data for each dataset
+                if self.model_args['vocab_size'] is None:
+                    sys.exit("Error: no vocab size specified")
+                elif self.model_args['vocab_size'] == 100277:
+                    # cl100k_base, vocab size 100277, requires np.uint32
+                    train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint32, mode='r')
+                    val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint32, mode='r')
+                else:
+                    # all other tokenations so far require only np.uint16
+                    train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                    val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+
+                # Store in dictionaries
+                self.train_data_dict[dataset] = train_data
+                self.val_data_dict[dataset] = val_data
+
+    def get_batch(self, split, target_dataset=None):
+        dataset = None
+        data = None
+        if self.args.dataset_list:
+            # If multi-dataset sampling is enabled, pick a dataset using sampling probabilities
+            if target_dataset:
+                dataset = target_dataset
+            else:
+                if self.args.dataset_sampling_probs:
+                    # Sample dataset based on probabilities
+                    dataset = np.random.choice(self.args.dataset_list, p=self.args.dataset_sampling_probs)
+                else:
+                    # Default to uniform sampling if probabilities are not provided
+                    dataset = np.random.choice(self.args.dataset_list)
+            data = self.train_data_dict[dataset] if split == 'train' else self.val_data_dict[dataset]
+        else:
+            # Else use the 'dataset' arg by default for backwards compatibility
+            dataset = self.args.dataset
+            data = self.train_data if split == 'train' else self.val_data
+
+        # Generate random indices for the batch
         ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
+
+        # Get training and targets
         x = torch.stack([torch.from_numpy((data[i:i+self.args.block_size]).astype(np.int64)) for i in ix])
         y = torch.stack([torch.from_numpy((data[i+1:i+1+self.args.block_size]).astype(np.int64)) for i in ix])
+
+        # Send to appropriate device
         if self.device_type == 'cuda':
             x, y = x.pin_memory().to(self.device, non_blocking=True), y.pin_memory().to(self.device, non_blocking=True)
         else:
@@ -732,16 +801,38 @@ class Trainer:
 
     @torch.no_grad()
     def estimate_loss(self):
-        out = {}
+        out = {'datasets':{}}
+
         self.model.eval()
-        for split in ['train', 'val']:
-            losses = torch.zeros(self.args.eval_iters)
-            for k in range(self.args.eval_iters):
-                X, Y = self.get_batch(split)
-                with self.ctx:
-                    logits, loss = self.model(X, Y)
-                losses[k] = loss.item()
-            out[split] = losses.mean()
+        # If multi-dataset sampling is enabled, we calculate loss per dataset
+        if self.args.dataset_list and len(self.args.dataset_list) > 1:
+            for dataset in self.args.dataset_list:
+                print(f"Calculating loss for dataset: {dataset}")
+                dataset_losses = {'train': torch.zeros(self.args.eval_iters), 'val': torch.zeros(self.args.eval_iters)}
+                for split in ['train', 'val']:
+                    for k in range(self.args.eval_iters):
+                        X, Y = self.get_batch(split, target_dataset=dataset)
+                        with self.ctx:
+                            logits, loss = self.model(X, Y)
+                        dataset_losses[split][k] = loss.item()
+                out['datasets'][dataset] = {
+                    'train': dataset_losses['train'].mean(),
+                    'val': dataset_losses['val'].mean()
+                }
+            for split in ['train', 'val']:
+                out[split] = out['datasets'][self.args.dataset][split]
+
+        else:
+            # Default behavior for a single dataset
+            for split in ['train', 'val']:
+                losses = torch.zeros(self.args.eval_iters)
+                for k in range(self.args.eval_iters):
+                    X, Y = self.get_batch(split)
+                    with self.ctx:
+                        logits, loss = self.model(X, Y)
+                    losses[k] = loss.item()
+                out[split] = losses.mean()
+
         self.model.train()
         return out
 
@@ -755,26 +846,45 @@ class Trainer:
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return self.args.min_lr + coeff * (self.args.learning_rate - self.args.min_lr)
 
-    def log_metrics(self, losses, lr, running_mfu, iter_num):
+    def log_metrics(self, losses, lr, running_mfu, iter_num, target_dataset=None):
         if self.args.tensorboard_log:
-            self.writer.add_scalars(
-                "loss", { "train": losses['train'], "val": losses['val'] }, iter_num
-            )
+            # Log metrics for each dataset separately
+            if target_dataset:
+                self.writer.add_scalars(
+                    "loss", {f"{target_dataset}/train": losses['train'].item(),
+                             f"{target_dataset}/val": losses['val'].item()}, iter_num
+                )
+            else:
+                self.writer.add_scalars(
+                    "loss", {"train": losses['train'].item(), "val":
+                             losses['val'].item()}, iter_num
+                )
+
             self.writer.add_scalar("mfu_pct", running_mfu * 100, iter_num)
             self.writer.add_scalar("lr", lr, iter_num)
 
         if self.args.wandb_log and self.master_process:
             import wandb
-            wandb.log({
+            log_data = {
                 "iter": iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
                 "lr": lr,
-                "mfu": running_mfu*100,
-            })
+                "mfu": running_mfu * 100,
+            }
+            if target_dataset:
+                log_data[f"{dataset}/train/loss"] = losses['train']
+                log_data[f"{dataset}/val/loss"] = losses['val']
+            else:
+                log_data["train/loss"] = losses['train']
+                log_data["val/loss"] = losses['val']
+
+            wandb.log(log_data)
 
         if self.args.csv_log:
-            self.write_to_csv(losses['train'].item(), losses['val'].item())
+            if target_dataset:
+                self.write_to_csv(losses['train'].item(), losses['val'].item(), prefix=f"{target_dataset}_")
+            else:
+                self.write_to_csv(losses['train'].item(), losses['val'].item())
+
 
     def write_to_csv(self, *args, prefix=""):
         csv_full_dir = self.args.csv_dir
@@ -818,11 +928,16 @@ class Trainer:
                 "mfu": running_mfu*100,
             })
 
-    def log_metrics_non_validation(self, loss_training, running_mfu, iter_num):
+    def log_metrics_non_validation(self, loss_training, running_mfu, iter_num, target_dataset=None):
         if self.args.tensorboard_log:
-            self.writer.add_scalars(
-                "loss", { "train": loss_training }, iter_num
-            )
+            if target_dataset:
+                self.writer.add_scalars(
+                    "loss", {f"{target_dataset}/train": loss_training}, iter_num
+                )
+            else:
+                self.writer.add_scalars(
+                    "loss", { "train": loss_training }, iter_num
+                )
             self.writer.add_scalar("mfu_pct", running_mfu * 100, iter_num)
 
         if self.args.wandb_log and self.master_process:
@@ -855,8 +970,15 @@ class Trainer:
 
                 if self.iter_num % self.args.eval_interval == 0 and self.master_process:
                     losses = self.estimate_loss()
-                    print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                    self.log_metrics(losses, lr, running_mfu, self.iter_num)
+                    if self.args.dataset_list and len(self.args.dataset_list) > 1:
+                        # Print loss for each dataset if multiple datasets are used
+                        for dataset, dataset_losses in losses['datasets'].items():
+                            print(f"step {self.iter_num}: {dataset} train loss {dataset_losses['train']:.4f}, val loss {dataset_losses['val']:.4f}")
+                            self.log_metrics(dataset_losses, lr, running_mfu, self.iter_num, target_dataset=dataset)
+                    else:
+                        # Default behavior for a single dataset
+                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+                        self.log_metrics(losses, lr, running_mfu, self.iter_num)
 
                     if math.isnan(losses["val"]):
                         checkpoint = {
