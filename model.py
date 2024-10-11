@@ -33,6 +33,11 @@ from variations.activation_variations import activation_dictionary
 from variations.linear_variations import linear_dictionary
 from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
+from attn_gym.masks import generate_sliding_window
+try:
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+except ImportError:
+    pass
 
 def create_shared_param_group(layer_type, config):
 
@@ -220,6 +225,9 @@ class CausalSelfAttention(nn.Module):
         # Sliding window size
         self.window_size = config.window_size
 
+        # Using flex attention
+        self.using_flex_attn = config.using_flex_attn
+
         # Gating
         self.gate = config.gate
 
@@ -293,10 +301,15 @@ class CausalSelfAttention(nn.Module):
         k = self.c_attn_k(x)
         v = self.c_attn_v(x)
 
-        if self.window_size is not None:
-            window_mask = torch.ones((1, 1, T, T), device=x.device)
-            window_mask = torch.triu(window_mask, diagonal=-self.window_size)
-            window_mask = self.bias[:,:,:T,:T] * window_mask
+        if self.using_flex_attn == False:
+            if self.window_size is not None:
+                window_mask = torch.ones((1, 1, T, T), device=x.device)
+                window_mask = torch.triu(window_mask, diagonal=-self.window_size)
+                window_mask = self.bias[:,:,:T,:T] * window_mask
+        else:
+                if self.window_size is not None:
+                    sliding_window_mask = generate_sliding_window(window_size=self.window_size)
+                    block_mask = torch.nn.attention.flex_attention.create_block_mask(sliding_window_mask, 1, 1 ,T, T, device="cuda")
 
         if self.gate:
             if self.n_kv_group == self.n_head:
@@ -340,55 +353,62 @@ class CausalSelfAttention(nn.Module):
                 num_bits = self.quantization_attn_dict["quantize_attn_act_qk_mult_k_input_bits"]
                 quant_method = self.quantization_attn_dict["activations_quant_method"]
                 k = fake_quantize_act(self, "attn_act_qk_mult_k_input", k, num_bits, quant_method)
-
-            att = None
-            # manual implementation of attention
-            if self.n_head != self.n_kv_group:
-                k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                att = (q @ k_repeated.transpose(-2, -1)) / math.sqrt(k.size(-1))
+            if self.using_flex_attn:
+                if self.n_head != self.n_kv_group:
+                    k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                    v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                    y = torch.nn.attention.flex_attention.flex_attention(q, k_repeated, v_repeated, block_mask=block_mask)
+                else:
+                    y = torch.nn.attention.flex_attention.flex_attention(q, k, v, block_mask=block_mask)
             else:
-                att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+                att = None
+                # manual implementation of attention
+                if self.n_head != self.n_kv_group:
+                    k_repeated = k.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                    att = (q @ k_repeated.transpose(-2, -1)) / math.sqrt(k.size(-1))
+                else:
+                    att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
-            # apply masks
-            if self.window_size is not None:
-                # add mask for sliding window attention
-                att = att.masked_fill(window_mask == 0, float('-inf'))
-            else:
-                # regular lower triangle attention
-                att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
+                # apply masks
+                if self.window_size is not None:
+                    # add mask for sliding window attention
+                    att = att.masked_fill(window_mask == 0, float('-inf'))
+                else:
+                    # regular lower triangle attention
+                    att = att.masked_fill(self.bias[:,:,:T,:T].to(x.device) == 0, float('-inf'))
 
-            # fire position embeddings
-            if self.use_fire_embeddings is not None:
-                # add learned fire bias
-                att = att + self.fire_pos_enc(x)
+                # fire position embeddings
+                if self.use_fire_embeddings is not None:
+                    # add learned fire bias
+                    att = att + self.fire_pos_enc(x)
 
-            if self.quantization_attn_dict["quantize_attn_act_softmax_input"]:
-                num_bits = self.quantization_attn_dict["quantize_attn_act_softmax_input_bits"]
-                quant_method = self.quantization_attn_dict["activations_quant_method"]
-                att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method)
+                if self.quantization_attn_dict["quantize_attn_act_softmax_input"]:
+                    num_bits = self.quantization_attn_dict["quantize_attn_act_softmax_input_bits"]
+                    quant_method = self.quantization_attn_dict["activations_quant_method"]
+                    att = fake_quantize_act(self, "attn_act_softmax_input", att, num_bits, quant_method)
 
-            # softmax variation
-            if self.softmax_variant_attn != 'softmax':
-                att = self.softmax_layer_attn(att)
-            else:
-                att = F.softmax(att, dim=-1)
+                # softmax variation
+                if self.softmax_variant_attn != 'softmax':
+                    att = self.softmax_layer_attn(att)
+                else:
+                    att = F.softmax(att, dim=-1)
 
-            att = self.attn_dropout(att)
+                att = self.attn_dropout(att)
 
-            if self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input"]:
-                num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input_bits"]
-                quant_method = self.quantization_attn_dict["activations_quant_method"]
-                att = fake_quantize_act(self, "attn_act_pv_mult_p_input", att, num_bits, quant_method)
-            if self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input"]:
-                num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input_bits"]
-                quant_method = self.quantization_attn_dict["activations_quant_method"]
-                v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method)
+                if self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input"]:
+                    num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_p_input_bits"]
+                    quant_method = self.quantization_attn_dict["activations_quant_method"]
+                    att = fake_quantize_act(self, "attn_act_pv_mult_p_input", att, num_bits, quant_method)
+                if self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input"]:
+                    num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_v_input_bits"]
+                    quant_method = self.quantization_attn_dict["activations_quant_method"]
+                    v = fake_quantize_act(self, "attn_act_pv_mult_v_input", v, num_bits, quant_method)
 
-            if self.n_head != self.n_kv_group:
-                v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
-                y = att @ v_repeated # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-            else:
-                y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+                if self.n_head != self.n_kv_group:
+                    v_repeated = v.repeat_interleave(self.n_head // self.n_kv_group, dim=1)
+                    y = att @ v_repeated # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+                else:
+                    y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         if self.quantization_attn_dict["quantize_attn_act_pv_mult_output"]:
             num_bits = self.quantization_attn_dict["quantize_attn_act_pv_mult_output_bits"]

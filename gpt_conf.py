@@ -39,7 +39,8 @@ class GPTConfig:
     export_scale_matrices_each_eval: bool = False
 
     dropout: float = 0.0
-    window_size: int = 128
+    window_size: int = None
+    using_flex_attn: bool = False
     gate: bool = False
     use_moe: bool = False
     moe_layer_freq: int = 2
