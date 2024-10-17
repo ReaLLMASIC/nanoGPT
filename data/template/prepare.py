@@ -410,7 +410,7 @@ def main():
             raise ValueError("Tokens file must be provided for custom tokenization method.")
         with open(args.tokens_file, "r") as f:
             tokens = [line.strip() for line in f.readlines() if line.strip()]
-            tokens = [token.replace("\\n", "\n").replace("\\t", "\t") for token in tokens]
+            tokens = [token.replace("\\n", "\n").replace("\\t", "\t").replace("' '", " ") for token in tokens]
 
         train_ids, train_coverage, stoi, itos = tokenize_custom_tokens(train_data, tokens)
         print(f"Training data coverage by tokens: {train_coverage*100:.2f}%")
