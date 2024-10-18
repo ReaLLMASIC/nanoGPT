@@ -187,6 +187,7 @@ class GPTConfig:
 
     # Activation Alternatives
     activation_variant: str = "gelu"
+    num_of_points: int = "8"
 
     # Linear Alternatives
     linear_variant_attn: str = "linear"

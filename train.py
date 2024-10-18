@@ -179,10 +179,13 @@ def parse_args():
             "gelu",
             "glu",
             "leaky_relu",
+            "learned_spline",
             "mish",
+            "piecewise",
+            "pfla",
             "prelu",
-            "relu6",
             "relu",
+            "relu6",
             "rrelu",
             "selu",
             "sigmoid",
@@ -194,7 +197,8 @@ def parse_args():
         ]
 
     # ACTIVATION VARIATIONS
-    model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations,)
+    model_group.add_argument( "--activation_variant", type=str, default="gelu", choices=activation_variations)
+    model_group.add_argument( "--num_of_points", type=int, default="8")
 
     # LINEAR VARIATIONS
     linear_variants = ["linear", "bitlinear", "bitlinear_1p58", "bitlinear_optimized", "kan","quantized_linear"]
