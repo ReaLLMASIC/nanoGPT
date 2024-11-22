@@ -33,6 +33,7 @@ from model import GPT, GPTConfig
 
 # Inference related imports
 import tiktoken
+from transformers import AutoTokenizer
 
 def parse_args():
 
@@ -77,8 +78,9 @@ def parse_args():
     training_group.add_argument('--only_save_checkpoint_at_end', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--always_save_checkpoint', default=False, action=argparse.BooleanOptionalAction)
     training_group.add_argument('--patience', default=None, type=int, help="if set, will stop training if the number of evaluations since val loss was seen to decrease exceeds 'patience' setting.")
-    training_group.add_argument('--init_from', default='scratch', choices=['scratch', 'prev_run', 'resume', 'gpt2'], type=str)
+    training_group.add_argument('--init_from', default='scratch', choices=['scratch', 'prev_run', 'resume', 'gpt2', 'Qwen2'], type=str)
     training_group.add_argument('--gpt2_type', default='gpt2', type=str)
+    training_group.add_argument('--qwen2_type', default='Qwen/Qwen2-1.5B', choices=['Qwen/Qwen2-0.5B', 'Qwen/Qwen2-1.5B', 'Qwen/Qwen2-7B'], type=str)
     training_group.add_argument('--prev_run_ckpt', default='', type=str)
     training_group.add_argument('--csv_ckpt_dir', default='', type=str)
 
@@ -151,7 +153,7 @@ def parse_args():
     ## MLP Options
     model_group.add_argument('--use_parallel_mlp', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument("--mlp_variant", type=str, default="mlp", choices=["mlp", "kan", "swiglu"], help="MLP variation type")
-    model_group.add_argument("--mlp_expansion_factor", type=int, default=4, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")
+    model_group.add_argument("--mlp_expansion_factor", type=float, default=4.0, help="If MLP like variant is used, set the expansion factor for the linear transformations, default is 4.")
 
     ## KAN Options
     model_group.add_argument("--kan_poly_order", type=int, default=3, help="Order of KAN non-linearity")
@@ -168,6 +170,7 @@ def parse_args():
     model_group.add_argument("--norm_variant_attn", type=str, default="rmsnorm", choices=["krmsnorm", "prmsnorm", "rmsnorm", "layernorm"])
     model_group.add_argument("--norm_variant_output", type=str, default="rmsnorm", choices=["krmsnorm", "prmsnorm", "rmsnorm", "layernorm"])
     model_group.add_argument('--bias', default=False, action=argparse.BooleanOptionalAction, help="only used for layernorm variation option")
+    model_group.add_argument('--qkv_bias', default=False, action=argparse.BooleanOptionalAction, help="bias for query, key, and value linear operations")
     model_group.add_argument("--prmsnorm_pct", default=0.0625, type=float, help="percentage (1 being 100 percent) of first entries used for partial rms" )
     model_group.add_argument("--krmsnorm_num", default=10, type=int, help="max number of first entries for partial rms" )
     model_group.add_argument("--krmsnorm_quantize_type", type=str, default="none", choices=["int8", "int16", "none"])
@@ -631,6 +634,7 @@ class Trainer:
             altered_model_args = {action.dest: getattr(self.args, action.dest) for action in self.model_group._group_actions if action.default != getattr(self.args, action.dest)}
             for k in altered_model_args:
                 self.model_args[k] = altered_model_args[k]
+                setattr(self.args, k, variation_dict[k])
 
             self.load_data()
             gptconf = GPTConfig(**self.model_args)
@@ -657,9 +661,30 @@ class Trainer:
             # NOTE: the hierarchy of parameters goes: 1)variation_dict >> 2)cmd-line args >> 3)GPTConfig defaults
             for k in variation_dict:
                 self.model_args[k] = variation_dict[k]
+                setattr(self.args, k, variation_dict[k])
 
             gptconf = GPTConfig(**self.model_args)
             self.model = GPT.from_pretrained(gptconf, model_type=self.args.gpt2_type)
+            self.load_data()
+
+            if self.args.lsv_focused_training:
+                self.model.freeze_non_lsv_parameters()
+
+        elif self.args.init_from.startswith('Qwen'):
+
+            assert self.args.qwen2_type in model_variation_dictionary
+
+            self.iter_num = 0 # for starting from scratch
+            self.best_val_loss = 1e9 # really big number
+
+            variation_dict = model_variation_dictionary[self.args.qwen2_type]
+            # NOTE: the hierarchy of parameters goes: 1)variation_dict >> 2)cmd-line args >> 3)GPTConfig defaults
+            for k in variation_dict:
+                self.model_args[k] = variation_dict[k]
+                setattr(self.args, k, variation_dict[k])
+
+            gptconf = GPTConfig(**self.model_args)
+            self.model = GPT.from_pretrained_qwen(gptconf, model_type=self.args.qwen2_type)
             self.load_data()
 
             if self.args.lsv_focused_training:
@@ -727,6 +752,11 @@ class Trainer:
                 self.stoi, self.itos = meta['stoi'], meta['itos']
                 self.encode = lambda s: [self.stoi[c] for c in s]
                 self.decode = lambda l: ''.join([self.itos[i] for i in l])
+            elif 'tokenizer' in meta and meta['tokenizer'] == 'Qwen2':
+                tokenizer = AutoTokenizer.from_pretrained(self.args.qwen2_type, trust_remote_code=True)
+                self.encode = lambda s: tokenizer.encode(s, add_special_tokens=False)
+                self.decode = lambda l: tokenizer.decode(l)
+                print(f"Using Qwen tokenizer: {self.args.qwen2_type}")
             else:
                 self.stoi, self.itos = meta['stoi'], meta['itos']
                 self.encode = lambda s: [self.stoi[c] for c in s]
@@ -796,8 +826,9 @@ class Trainer:
 
             if self.model_args['vocab_size'] is None:
                 sys.exit("Error: no vocab size specified")
-            elif self.model_args['vocab_size'] == 100277:
+            elif self.model_args['vocab_size'] > 65536:
                 # cl100k_base, vocab size 100277, requires np.uint32
+                # Qwen2, vocab size 152064 or 151936, requires np.uint32
                 self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
                 self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
             else:
@@ -824,8 +855,9 @@ class Trainer:
                 # Load train and val data for each dataset
                 if self.model_args['vocab_size'] is None:
                     sys.exit("Error: no vocab size specified")
-                elif self.model_args['vocab_size'] == 100277:
+                elif self.model_args['vocab_size'] > 65536:
                     # cl100k_base, vocab size 100277, requires np.uint32
+                    # Qwen2, vocab size 152064 or 151936, requires np.uint32
                     train_data = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint32, mode='r')
                     val_data = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint32, mode='r')
                 else:

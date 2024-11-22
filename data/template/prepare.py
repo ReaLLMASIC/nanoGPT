@@ -11,6 +11,8 @@ import numpy as np
 import pickle
 import sys
 
+from transformers import AutoTokenizer
+
 def get_key_from_meta(keyname):
     # Data loader
     meta_path = 'meta.pkl'
@@ -166,9 +168,17 @@ def main():
     parser.add_argument(
         "--method",
         type=str,
-        choices=["sentencepiece", "tiktoken", "char", "custom", "replace", "lines"],
+        choices=["sentencepiece", "tiktoken", "char", "custom", "replace", "lines", "Qwen2"],
         default="tiktoken",
         help="Tokenization method",
+    )
+
+    parser.add_argument(
+        "--qwen2_type",
+        type=str,
+        choices=['Qwen/Qwen2-0.5B', 'Qwen/Qwen2-1.5B', 'Qwen/Qwen2-7B'],
+        default="Qwen/Qwen2-1.5B",
+        help="Model for Qwen2 tokenization",
     )
 
     # Sentence Piece only arguments
@@ -474,6 +484,28 @@ def main():
         with open("meta.pkl", "wb") as f:
             pickle.dump(meta, f)
 
+    elif args.method == "Qwen2":
+        # Load the Qwen2 tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(args.qwen2_type, trust_remote_code=True)
+        # Tokenize the train data
+        print("Tokenizing training data with Qwen2 tokenizer...")
+        train_ids = tokenizer.encode(train_data, add_special_tokens=False)
+        if val_data is not None:
+            print("Tokenizing validation data with Qwen2 tokenizer...")
+            val_ids = tokenizer.encode(val_data, add_special_tokens=False)
+        # Get the vocab size
+        vocab_size = tokenizer.vocab_size
+        print("vocab size", vocab_size)
+        # Save meta information
+        meta = {
+            "vocab_size": vocab_size,
+            "tokenizer": "Qwen2",
+            "qwen2_type": args.qwen2_type,
+        }
+        # Save meta.pkl
+        with open("meta.pkl", "wb") as f:
+            pickle.dump(meta, f)
+
     # Print token counts and export to bin files
     if train_ids is None:
         sys.exit(f"train_ids none, exiting with error")
@@ -481,7 +513,7 @@ def main():
     print(f"train has {len(train_ids):,} tokens")
     if val_data is not None:
         print(f"val has {len(val_ids):,} tokens")
-    if (args.tiktoken_encoding == "cl100k_base" and args.method == "tiktoken") or (args.numeric_range and args.max_token > 65535):
+    if (args.tiktoken_encoding == "cl100k_base" and args.method == "tiktoken") or (args.numeric_range and args.max_token > 65535) or ('vocab_size' in meta and meta['vocab_size'] > 65536):
         dtype = np.uint32
     else:
         dtype = np.uint16

@@ -143,8 +143,7 @@ class CausalSelfAttention(nn.Module):
         self.linear_variant_attn_proj = linear_dictionary[set_variant(config.linear_variant_attn_proj, config.linear_variant_attn)]
 
         # key, query, value projections for all heads, but in a batch
-        self.c_attn_q = self.linear_variant_q(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_q_method"], self.quantization_attn_dict["quantize_linear_attn_q_bits"], bias=config.bias)
-
+        self.c_attn_q = self.linear_variant_q(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_q_method"], self.quantization_attn_dict["quantize_linear_attn_q_bits"], bias=config.qkv_bias)
         self.n_head = config.n_head
         if config.n_kv_group == None:
             self.n_kv_group = config.n_head
@@ -153,8 +152,8 @@ class CausalSelfAttention(nn.Module):
             self.n_kv_group = config.n_kv_group
 
         self.kv_dim = (config.n_embd // config.n_head) * self.n_kv_group
-        self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.bias)
-        self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.bias)
+        self.c_attn_k = self.linear_variant_k(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_k_method"], self.quantization_attn_dict["quantize_linear_attn_k_bits"], bias=config.qkv_bias)
+        self.c_attn_v = self.linear_variant_v(config.n_embd, self.kv_dim, config, self.quantization_attn_dict["quantize_linear_attn_v_method"], self.quantization_attn_dict["quantize_linear_attn_v_bits"], bias=config.qkv_bias)
         self.c_proj = self.linear_variant_attn_proj(config.n_embd, config.n_embd, config, self.quantization_attn_dict["quantize_linear_attn_proj_method"], self.quantization_attn_dict["quantize_linear_attn_proj_bits"], bias=config.bias)
 
         # Regularization
@@ -470,13 +469,14 @@ class MLP(nn.Module):
                     self.quantization_mlp_dict[arg] = set_variant(val, config.quantize_linear_method)
 
             # Instantiate Linear Layers
+            intermediate_size = math.ceil(config.mlp_expansion_factor * config.n_embd)
             if self.mlp_variant == "mlp":
-                self.c_fc = self.linear_variant_mlp_up(config.n_embd, config.mlp_expansion_factor * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"], bias=config.bias)
-                self.c_proj = self.linear_variant_mlp_down(config.mlp_expansion_factor * config.n_embd, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"], bias=config.bias)
+                self.c_fc = self.linear_variant_mlp_up(config.n_embd, intermediate_size, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"], bias=config.bias)
+                self.c_proj = self.linear_variant_mlp_down(intermediate_size, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"], bias=config.bias)
             elif self.mlp_variant == "swiglu":
-                self.c_fc_in1 = self.linear_variant_mlp_up(config.n_embd, config.mlp_expansion_factor * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
-                self.c_fc_in2 = self.linear_variant_mlp_up(config.n_embd, config.mlp_expansion_factor * config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
-                self.c_fc_out = self.linear_variant_mlp_down(config.mlp_expansion_factor * config.n_embd, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"])
+                self.c_fc_in1 = self.linear_variant_mlp_up(config.n_embd, intermediate_size, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
+                self.c_fc_in2 = self.linear_variant_mlp_up(config.n_embd, intermediate_size, config, self.quantization_mlp_dict["quantize_linear_mlp_up_method"], self.quantization_mlp_dict["quantize_linear_mlp_up_bits"])
+                self.c_fc_out = self.linear_variant_mlp_down(intermediate_size, config.n_embd, config, self.quantization_mlp_dict["quantize_linear_mlp_down_method"], self.quantization_mlp_dict["quantize_linear_mlp_down_bits"])
 
         self.dropout = nn.Dropout(config.dropout)
 
@@ -927,6 +927,75 @@ class GPT(nn.Module):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
     @classmethod
+    def from_pretrained_qwen(cls, config, model_type="Qwen/Qwen2-7B"):
+        from transformers import AutoModelForCausalLM, AutoConfig
+
+        print(f"loading weights from pretrained gpt: {model_type}")
+
+        model = GPT(config)
+        sd = model.state_dict()
+        
+        config_hf = AutoConfig.from_pretrained(model_type, trust_remote_code=True)
+        model_hf = AutoModelForCausalLM.from_pretrained(model_type, config=config_hf, trust_remote_code=True)
+        sd_hf = model_hf.state_dict()
+
+        parameter_mapping = {}
+
+        # Map the embeddings
+        parameter_mapping['transformer.wte.weight'] = 'model.embed_tokens.weight'
+
+        # Map the layers
+        for i in range(config.n_layer):
+            user_layer_prefix = f'transformer.h.{i}'
+            hf_layer_prefix = f'model.layers.{i}'
+
+            # Map attention weights
+            parameter_mapping[f'{user_layer_prefix}.attn.c_attn_q.weight'] = f'{hf_layer_prefix}.self_attn.q_proj.weight'
+            parameter_mapping[f'{user_layer_prefix}.attn.c_attn_q.bias'] = f'{hf_layer_prefix}.self_attn.q_proj.bias'
+
+            parameter_mapping[f'{user_layer_prefix}.attn.c_attn_k.weight'] = f'{hf_layer_prefix}.self_attn.k_proj.weight'
+            parameter_mapping[f'{user_layer_prefix}.attn.c_attn_k.bias'] = f'{hf_layer_prefix}.self_attn.k_proj.bias'
+
+            parameter_mapping[f'{user_layer_prefix}.attn.c_attn_v.weight'] = f'{hf_layer_prefix}.self_attn.v_proj.weight'
+            parameter_mapping[f'{user_layer_prefix}.attn.c_attn_v.bias'] = f'{hf_layer_prefix}.self_attn.v_proj.bias'
+
+            parameter_mapping[f'{user_layer_prefix}.attn.c_proj.weight'] = f'{hf_layer_prefix}.self_attn.o_proj.weight'
+
+            # Map layer normalization weights
+            parameter_mapping[f'{user_layer_prefix}.ln_1.gain'] = f'{hf_layer_prefix}.input_layernorm.weight'
+
+            parameter_mapping[f'{user_layer_prefix}.ln_2.gain'] = f'{hf_layer_prefix}.post_attention_layernorm.weight'
+
+            assert config.mlp_variant == "swiglu"
+            # Map for SwiGLU activation variant
+            parameter_mapping[f'{user_layer_prefix}.mlp.c_fc_in1.weight'] = f'{hf_layer_prefix}.mlp.gate_proj.weight'
+
+            parameter_mapping[f'{user_layer_prefix}.mlp.c_fc_in2.weight'] = f'{hf_layer_prefix}.mlp.up_proj.weight'
+
+            parameter_mapping[f'{user_layer_prefix}.mlp.c_fc_out.weight'] = f'{hf_layer_prefix}.mlp.down_proj.weight'
+
+        # Map final layer normalization weights
+        parameter_mapping['transformer.ln_f.gain'] = 'model.norm.weight'
+
+        # Map the output head
+        parameter_mapping['lm_head.weight'] = 'lm_head.weight'
+
+        # Load the parameters
+        for model_param, hf_param in parameter_mapping.items():
+            if model_param in sd and hf_param in sd_hf:
+                if sd[model_param].shape == sd_hf[hf_param].shape:
+                    with torch.no_grad():
+                        sd[model_param].copy_(sd_hf[hf_param])
+                else:
+                    print(f"Shape mismatch for parameter {model_param}: "
+                        f"model shape {sd[model_param].shape} vs "
+                        f"pretrained shape {sd_hf[hf_param].shape}")
+            else:
+                print(f"Parameter {model_param} or {hf_param} not found in the respective models.")
+
+        return model
+
+    @classmethod
     def from_pretrained(cls, config, model_type):
         # assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
@@ -935,7 +1004,6 @@ class GPT(nn.Module):
 
         # create a from-scratch initialized minGPT model
         model = GPT(config)
-        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
 
         sd = model.state_dict()
         sd_keys = sd.keys()

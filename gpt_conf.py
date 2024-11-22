@@ -71,7 +71,7 @@ class GPTConfig:
     # MLP Options
     use_parallel_mlp: bool = False
     mlp_variant: str = "mlp"
-    mlp_expansion_factor: int = 4
+    mlp_expansion_factor: float = 4.0
 
     ## KAN Option
     kan_poly_order: int = 3
@@ -180,6 +180,7 @@ class GPTConfig:
     norm_variant_attn: str = "rmsnorm"
     norm_variant_output: str = "rmsnorm"
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    qkv_bias: bool = False
     prmsnorm_pct: float = 0.0625
     krmsnorm_num: float = 10
     krmsnorm_quantize_type: str = 'int8'
