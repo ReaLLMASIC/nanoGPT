@@ -18,6 +18,7 @@ from collections import OrderedDict
 from model import GPT, GPTConfig
 from model_info_util.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
+from hellaswag import evaluate_hellaswag_few_shot
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -61,6 +62,9 @@ def parse_args():
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
+    parser.add_argument("--few_shot_examples", type=int, default=0,
+                        help="Number of few-shot examples to prepend to the input prompt for evaluation")
+    parser.add_argument("--hellaswag_benchmark", action=argparse.BooleanOptionalAction, default=False, help="whether to run hellaswag benchmarking")
 
     return parser.parse_args()
 
@@ -349,7 +353,9 @@ def main():
                 logits, _ = model(idx_cond)
         print(f"Obtained vector saved to {args.save_avg_vector}")
 
-
+    if args.hellaswag_benchmark:
+        evaluate_hellaswag_few_shot(model, encode, args.device, args.few_shot_examples, args.start, eval_iters=args.eval_iters, temperature=args.temperature, seed=args.seed)
+        return
 
     if args.interactive:
         interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_string, decode, encode)
