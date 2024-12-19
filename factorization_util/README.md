@@ -72,11 +72,3 @@ This example command will:
 
 - If the matrix path is not provided, the script will generate a random matrix with a shape of `(50000, 384)` for factorization.
 - Ensure that your environment is set up to access Vizier services.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-This `README.md` provides an overview of the script's functionality, instructions on how to install dependencies, details on command-line arguments, and example usage.

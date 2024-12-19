@@ -16,7 +16,7 @@ from torch.nn import functional as F
 from collections import OrderedDict
 
 from model import GPT, GPTConfig
-from model_info_util.model_info import print_summary, print_module_structure, print_model_blocks
+from utils.model_info import print_summary, print_module_structure, print_model_blocks
 from variations.model_variations import model_variation_dictionary
 
 def parse_args():

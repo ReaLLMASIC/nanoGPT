@@ -10,8 +10,18 @@ import shutil
 import sys
 import time
 
-from model_info_util.model_info import print_summary, print_module_structure, print_model_blocks, print_model_tree
-from monitoring_util.gpu_monitoring import get_gpu_memory_info
+from utils.gpu_monitoring import get_gpu_memory_info
+from utils.model_info import (
+    print_summary,
+    print_module_structure,
+    print_model_blocks,
+    print_model_tree,
+)
+from utils.statistic_plots import (
+    initialize_statistics,
+    plot_statistics,
+    create_statistics,
+)
 
 from rich.progress import Progress
 
@@ -22,11 +32,6 @@ import torch
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
-from statistics_util.statistic_plots import (
-    initialize_statistics,
-    plot_statistics,
-    create_statistics,
-)
 from variations.model_variations import model_variation_dictionary
 
 from model import GPT, GPTConfig
