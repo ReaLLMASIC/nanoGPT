@@ -174,7 +174,7 @@ parent directory.
 
 Example usage:
 ```bash
-python3 inspect_ckpts.py --directory ./out --sort loss
+python3 checkpoint_analysis/inspect_ckpts.py --directory ./out --sort loss
 ```
 
 ![image](./images/inspect_ckpts.png)
@@ -183,7 +183,7 @@ This can be wrapped with color via the watch command for a realtime dashboard.
 
 For example to look at all checkpoint files in the out directory:
 ```bash
-watch --color 'python3 inspect_ckpts.py --directory ./out --sort loss'
+watch --color 'python3 checkpoint_analysis/inspect_ckpts.py --directory ./out --sort loss'
 ```
 
 As with remainder of the repo, this script is provided as a base to open up for
@@ -194,7 +194,7 @@ additional community contributions.
 If using tensorboard for logging, we have provided a convenience script:
 
 ```bash
-bash start_tensorboard.sh
+source ./logging/start_tensorboard.sh
 ```
 
 You can view live validation loss updates on url: [http://localhost:6006](http://localhost:6006)
