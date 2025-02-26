@@ -12,6 +12,10 @@ class GPTConfig:
     n_kv_group: int = 12
     n_embd: int = 768
 
+    # For multicontext training
+    multicontext: bool = False
+    vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab
+
     # Steering Vectors
     ## Where to intercept
     apply_vector_at_layer_idx: int = None

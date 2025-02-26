@@ -1,5 +1,4 @@
 # train.py
-import argparse
 from contextlib import nullcontext
 import csv
 import json
@@ -74,6 +73,8 @@ class Trainer:
             self.args.dataset = self.args.dataset_list[0]
             print(self.args.dataset)
 
+        if self.args.training_mode == 'multicontext':
+            self.vocab_sizes = {}
         # init optimizer and scheduler
         self.optimizer = None
         self.scheduler = None
@@ -432,6 +433,7 @@ class Trainer:
             with torch.no_grad():
                 for _ in range(max_sample_tokens):
                     x_cond = x if x.size(1) <= self.args.block_size else x[:, -self.args.block_size:]
+                    # TODO: make compatible with multidatset and multicontext
                     logits, _ = self.model(x_cond, iter_num=self.iter_num)
                     logits = logits[:, -1, :]
                     probs = torch.softmax(logits, dim=-1)
@@ -471,21 +473,27 @@ class Trainer:
 
     def load_data(self):
 
-        if self.args.dataset_list is None:
-
-            if self.model_args['vocab_size'] is None:
-                sys.exit("Error: no vocab size specified")
-            elif self.model_args['vocab_size'] == 100277:
-                # cl100k_base, vocab size 100277, requires np.uint32
-                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
-                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
-            else:
-                # all other tokenations so far require only np.uint16
-                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
-                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
-            # Store total token count for the single dataset.
-            self.dataset_size_tokens = len(self.train_data)
-        else:
+        if self.args.training_mode == 'multicontext':
+            # Expecting --multicontext_datasets to be provided.
+            if self.args.multicontext_datasets is None:
+                sys.exit("Error: When training_mode is 'multicontext', please provide --multicontext_datasets.")
+            self.train_data_dict = {}
+            self.val_data_dict = {}
+            for dataset in self.args.multicontext_datasets:
+                meta_path = os.path.join('data', dataset, 'meta.pkl')
+                if not os.path.exists(meta_path):
+                    sys.exit(f"Error: Meta file not found at {meta_path}")
+                with open(meta_path, 'rb') as f:
+                    meta = pickle.load(f)
+                    vocab_size = meta.get('vocab_size', None)
+                    print(vocab_size, dataset)
+                    self.vocab_sizes[dataset] = meta['vocab_size']
+                # Here we use np.uint16 for most datasets:
+                self.train_data_dict[dataset] = np.memmap(os.path.join('data', dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                self.val_data_dict[dataset]   = np.memmap(os.path.join('data', dataset, 'val.bin'), dtype=np.uint16, mode='r')
+            # Also store total token counts per dataset.
+            self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.multicontext_datasets}
+        if self.args.training_mode == 'multidataset':
             self.train_data_dict = {}
             self.val_data_dict = {}
 
@@ -517,8 +525,23 @@ class Trainer:
                 # Store in dictionaries
                 self.train_data_dict[dataset] = train_data
                 self.val_data_dict[dataset] = val_data
-            # For multi-dataset case, store the token count for each dataset in a dictionary.
+                # For multi-dataset case, store the token count for each dataset in a dictionary.
+            print(self.train_data_dict, self.args.dataset_list)
+            print({d: len(self.train_data_dict[d]) for d in self.args.dataset_list})
             self.dataset_size_tokens = {d: len(self.train_data_dict[d]) for d in self.args.dataset_list}
+        else:
+            if self.model_args['vocab_size'] is None:
+                sys.exit("Error: no vocab size specified")
+            elif self.model_args['vocab_size'] == 100277:
+                # cl100k_base, vocab size 100277, requires np.uint32
+                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint32, mode='r')
+                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint32, mode='r')
+            else:
+                # all other tokenations so far require only np.uint16
+                self.train_data = np.memmap(os.path.join('data', self.args.dataset, 'train.bin'), dtype=np.uint16, mode='r')
+                self.val_data = np.memmap(os.path.join('data', self.args.dataset, 'val.bin'), dtype=np.uint16, mode='r')
+            # Store total token count for the single dataset.
+            self.dataset_size_tokens = len(self.train_data)
 
 
     def get_batch(self, split, target_dataset=None):
@@ -536,13 +559,44 @@ class Trainer:
 
         def get_transitioned_probs():
             initial_probs = np.array(self.args.dataset_sampling_probs)
-            if self.args.final_dataset_sampling_probs:
+            if self.args.dataset_sampling_probs_final:
                 step_ratio = self.iter_num / self.args.max_iters
                 final_probs = np.array(self.args.dataset_sampling_probs_final)
                 return interpolate_probs(initial_probs, final_probs, self.args.transition_method, step_ratio)
             return initial_probs
 
-        if self.args.dataset_list:
+        if self.args.training_mode == 'multicontext':
+            x_dict = {}
+            y_dict = {}
+            ix = None
+            # For each context/dataset, grab a batch
+            for dataset_name in self.args.multicontext_datasets:
+                data = (self.train_data_dict[dataset_name] 
+                        if split == 'train' else self.val_data_dict[dataset_name])
+                if ix is None:
+                    ix = torch.randint(len(data) - self.args.block_size, (self.args.batch_size,))
+                # pick random offset
+                x = torch.stack([
+                    torch.from_numpy(data[i : i+self.args.block_size].astype(np.int64)) 
+                    for i in ix
+                ])
+                y = torch.stack([
+                    torch.from_numpy(data[i+1 : i+1+self.args.block_size].astype(np.int64)) 
+                    for i in ix
+                ])
+                # Move to device
+                if self.device_type == 'cuda':
+                    x = x.pin_memory().to(self.device, non_blocking=True)
+                    y = y.pin_memory().to(self.device, non_blocking=True)
+                else:
+                    x, y = x.to(self.device), y.to(self.device)
+
+                x_dict[dataset_name] = x
+                y_dict[dataset_name] = y
+
+            return x_dict, y_dict, list(self.args.multicontext_datasets)
+
+        elif self.args.training_mode == "multidataset":
             # If multi-dataset sampling is enabled, pick a dataset using sampling probabilities
             if target_dataset:
                 dataset = target_dataset
@@ -610,6 +664,7 @@ class Trainer:
                 dataset_index = self.args.dataset_list.index(dataset)
                 self.args.learning_rate = self.args.dataset_sampling_learning_rate[dataset_index]
 
+
         else:
             # Else use the 'dataset' arg by default for backwards compatibility
             dataset = self.args.dataset
@@ -675,22 +730,6 @@ class Trainer:
         return x, y, dataset
 
     @torch.no_grad()
-    def custom_loss_with_top1_focus(self, logits, targets):
-        # Compute standard cross-entropy loss
-        ce_loss = torch.nn.functional.cross_entropy(logits, targets)
-
-        # Get the top-1 predictions
-        top1_preds = torch.argmax(logits, dim=-1)
-
-        # Focus more on the top-1 prediction by adding an additional term
-        correct_top1 = (top1_preds == targets).float()  # 1 for correct, 0 for incorrect
-        top1_focus_loss = 1.0 - correct_top1  # Emphasize the wrong top-1 predictions
-
-        # Combine the original cross-entropy loss and the top-1 focus term
-        loss = ce_loss + 0.5 * top1_focus_loss.mean()  # Adjust the weight (0.5) as needed
-        return loss
-
-    @torch.no_grad()
     def estimate_loss(self):
         out = {'datasets':{}}
 
@@ -716,6 +755,43 @@ class Trainer:
             out['val_std'] = out['datasets'][self.args.dataset]['val_std']
             out['train'] = out['datasets'][self.args.dataset]['train']
             out['train_std'] = out['datasets'][self.args.dataset]['train_std']
+        elif self.args.training_mode == "multicontext":
+            for i, dataset in enumerate(self.args.multicontext_datasets):
+                out['datasets'][dataset] = {}
+            # multicontext training
+            for split in ['train', 'val']:
+                losses = {}
+                means = {}
+                std_devs = {}
+                mean_avg = 0.0
+                loss_std = 0.0
+                dataset_list = None
+                for i, dataset in enumerate(self.args.multicontext_datasets):
+                    losses[f"{i}"] = torch.zeros(self.args.eval_iters)
+                    means[f"{i}"] = 0.0
+
+                for k in range(self.args.eval_iters):
+                    x_dict, y_dict, dataset_list = self.get_batch(split)
+
+                    with self.ctx:
+                        logits, loss_list = self.model(None, token_dict=x_dict, target_dict=y_dict, iter_num=self.iter_num)
+                    for i in range(len(self.args.multicontext_datasets)):
+                        losses[f"{i}"][k] = loss_list[i]
+
+                for i, dataset in enumerate(self.args.multicontext_datasets):
+                    means[f"{i}"] = losses[f"{i}"].mean()
+                    std_devs[f"{i}"]  = losses[f"{i}"].std()
+
+                    mean_avg += means[f"{i}"]
+                    loss_std += std_devs[f"{i}"]
+
+                for i, dataset in enumerate(self.args.multicontext_datasets):
+                    out['datasets'][dataset][split] = means[f"{i}"]
+                    out['datasets'][dataset][f"{split}_std"] = std_devs[f"{i}"]
+
+                # general train and val losses, as well as std dev
+                out[split] = np.array(mean_avg / len(self.args.multicontext_datasets))
+                out[split + "_std"] = np.array(loss_std / len(self.args.multicontext_datasets))
         else:
             # Default behavior for a single dataset
             for split in ['train', 'val']:
@@ -913,7 +989,11 @@ class Trainer:
         torch.save(checkpoint, os.path.join(self.args.out_dir, filename))
 
     def train(self):
-        self.X, self.Y, current_dataset = self.get_batch('train')
+        if self.args.training_mode == 'multicontext':
+            self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
+            current_dataset = dataset_list[0]
+        else:
+            self.X, self.Y, current_dataset = self.get_batch('train')
         t0 = time.time()
         local_iter_num = 0
         running_mfu = -1.0
@@ -953,12 +1033,49 @@ class Trainer:
                     if self.args.dataset_list is not None:
                         # Print loss for each dataset if multiple datasets are used
                         for dataset, dataset_losses in losses['datasets'].items():
-                            print(f"step {self.iter_num}: {dataset:<20s}, train loss {dataset_losses['train']:.4f}, train_stdev {dataset_losses['train_std']:.4f}, val loss {dataset_losses['val']:.4f}, val_stdev {dataset_losses['val_std']:.4f}, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, tokens_trained {self.tokens_trained_dict[dataset]:.2e}")
+                            log_message=f"step {self.iter_num}: "
+                            log_message+=f"{dataset:<20s}"
+                            log_message+=f", train loss {dataset_losses['train']:.4f}"
+                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
+                            log_message+=f", val loss {dataset_losses['val']:.4f}"
+                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                            if self.args.gns_type is not None:
+                                log_message+=f", gns {self.gns:.2f}"
+                            log_message+=f", lr {self.lr:.4f}"
+                            log_message+=f", tokens_trained {self.tokens_trained_dict[dataset]:.2e}"
+                            print(log_message)
                             self.log_metrics(dataset_losses, running_mfu, self.epochs_trained_dict[dataset], self.tokens_trained_dict[dataset], dataset)
+                    elif self.args.multicontext_datasets is not None:
+                        # Print loss for each dataset if multiple datasets are used
+                        # print(losses['datasets'])
+                        # for dataset, dataset_losses in losses['datasets'].items():
+                        #     print(dataset, dataset_losses)
+                        for dataset, dataset_losses in losses['datasets'].items():
+                            log_message=f"step {self.iter_num}: "
+                            log_message+=f"{dataset:<20s}"
+                            log_message+=f", train loss {dataset_losses['train']:.4f}"
+                            log_message+=f", train_stdev {dataset_losses['train_std']:.4f}"
+                            log_message+=f", val loss {dataset_losses['val']:.4f}"
+                            log_message+=f", val_stdev {dataset_losses['val_std']:.4f}"
+                            if self.args.gns_type is not None:
+                                log_message+=f", gns {self.gns:.2f}"
+                            log_message+=f", lr {self.lr:.4f}"
+                            log_message+=f", tokens_trained {self.tokens_trained:.2e}"
+                            print(log_message)
+                            self.log_metrics(dataset_losses, running_mfu, current_epoch, self.tokens_trained, dataset)
                     else:
                         # Default behavior for a single dataset
-                        print(f"step {self.iter_num}: train loss {losses['train']:.4f}, train_stdev {losses['train_std']:.4f}, val loss {losses['val']:.4f}, val_stdev {losses['val_std']:.4f}, lr {self.lr:.4f}")
-                        self.log_metrics(losses, current_epoch, running_mfu, self.tokens_trained, current_dataset)
+                        log_message=f"step {self.iter_num}:"
+                        log_message+=f", train loss {losses['train']:.4f}"
+                        log_message+=f", train_stdev {losses['train_std']:.4f}"
+                        log_message+=f", val loss {losses['val']:.4f}"
+                        log_message+=f", val_stdev {losses['val_std']:.4f}"
+                        if self.args.gns_type is not None:
+                            log_message+=f", gns {self.gns:.2f}"
+                        log_message+=f", batch_size {self.args.batch_size}"
+                        log_message+=f", lr {self.lr:.4f}"
+                        print(log_message)
+                        self.log_metrics(losses, running_mfu, current_epoch, self.tokens_trained, current_dataset)
 
                     if math.isnan(losses["val"]):
                         # If val loss is nan, then exit.
@@ -1024,10 +1141,12 @@ class Trainer:
                         self.model.require_backward_grad_sync = (micro_step == self.args.gradient_accumulation_steps - 1)
 
                     with self.ctx:
-                        logits, loss = self.model(self.X, self.Y, iter_num=self.iter_num)
-
-                        if self.args.focus_on_top1_loss:
-                            loss = self.custom_loss_with_top1_focus(logits, self.Y)  # Use custom loss
+                        if self.args.training_mode == 'multicontext':
+                            total_loss = 0
+                            logits, losses = self.model(None, token_dict=self.X_dict, target_dict=self.Y_dict, iter_num=self.iter_num)
+                            loss = sum(losses)/len(losses)
+                        else:
+                            logits, loss = self.model(self.X, targets=self.Y, iter_num=self.iter_num)
 
                         loss = loss / self.args.gradient_accumulation_steps
 
@@ -1052,7 +1171,11 @@ class Trainer:
                     # measure grad norms
                     self.get_gradient_stats()
 
-                    self.X, self.Y, current_dataset = self.get_batch('train')
+                    if self.args.training_mode == 'multicontext':
+                        self.X_dict, self.Y_dict, dataset_list = self.get_batch('train')
+                        current_dataset = dataset_list[0]
+                    else:
+                        self.X, self.Y, current_dataset = self.get_batch('train')
 
                     if self.args.gns_type is not None:
                         approx_gns_results = gather_hook_results(self.model)
@@ -1087,15 +1210,29 @@ class Trainer:
                     if local_iter_num >= 5:
                         mfu = self.raw_model.estimate_mfu(self.args.batch_size * self.args.gradient_accumulation_steps, dt)
                         running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
+
+                    # training _loss section
+                    log_message= f"iter {self.iter_num}: loss {lossf:.4f}"
+                    log_message+= f", time {dt*1000:.2f} ms"
+                    if self.args.dataset_list:
+                        log_message+= f", epoch {self.epochs_trained_dict[prior_dataset]:6.2f}"
+                        log_message+= f", tokens_trained {self.tokens_trained_dict[prior_dataset]:.2e}"
+                    else:
+                        log_message+= f", epoch {current_epoch:6.2f}"
+                        log_message+= f", tokens_trained {self.tokens_trained:.2e}"
+                    log_message+= f", dataset: {prior_dataset}"
+                    log_message+= f", mfu {running_mfu*100:.2f}%"
                     if self.args.gns_type is not None:
                         self.gns = self.gns_ema.get_gns()
-                        if self.args.dataset_list:
-                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {self.epochs_trained_dict[prior_dataset]:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, grad_norm {self.grad_norm:2f}, grad_std {self.grad_std:.2f}, tokens_trained {self.tokens_trained_dict[prior_dataset]:e}")
-                        else:
-                            print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, epoch {current_epoch:6.2f}, dataset: {prior_dataset}, mfu {running_mfu*100:.2f}%, gns {self.gns:.2f}, batch_size {self.args.batch_size}, lr {self.lr:.4f}, grad_norm {self.grad_norm:.2f}, grad_std {self.grad_std:.2f}, tokens_trained {self.tokens_trained:e}")
-                    else:
-                        print(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f} ms, lr {self.lr}, epoch {current_epoch:6.2f}, tokens_trained {self.tokens_trained:e}, dataset: {prior_dataset}, {self.grad_norm}, grad_std {self.grad_std}, mfu {running_mfu*100:.2f}%")
+                        log_message+= f", gns {self.gns:.2f}"
+                    log_message+= f", batch_size {self.args.batch_size}"
+                    log_message+= f", lr {self.lr:.4f}"
+                    log_message+= f", grad_norm {self.grad_norm:2f}"
+                    log_message+= f", grad_std {self.grad_std:.2f}"
 
+                    print(log_message)
+
+                    # training _loss section
                     if math.isnan(lossf):
                         # If training loss is nan, then exit.
                         with open(self.args.out_dir + "/nan_iter_num.txt", 'w') as file:
