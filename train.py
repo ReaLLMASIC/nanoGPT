@@ -799,7 +799,7 @@ class Trainer:
 
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset):
 
-        if self.iter_num == 0 and self.args.tensorboard_log:
+        if self.iter_num == 0 and self.args.tensorboard_log and (self.args.compile == False):
             self.export_model_graph()
 
 

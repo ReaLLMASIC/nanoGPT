@@ -40,6 +40,8 @@ from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
+from initializations.initialization_variations import init_dictionary
+
 def create_shared_param_group(layer_type, config):
     """
     Creates a shared list of layer blocks (either MLP or Attn), optionally reusing blocks
@@ -241,11 +243,6 @@ class GPT(nn.Module):
             self.lm_head = nn.Linear(config.n_embd_wte, config.vocab_size, bias=False)
         else:
             self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        # with weight tying when using torch.compile() some warnings get generated:
-        # "UserWarning: functional_call was passed multiple values for tied weights.
-        # This behavior is deprecated and will be an error in future versions"
-        # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
         # Initialize and possibly import scale_up and scale_down matrices, if factorization is set
         if self.n_embd_wte:
@@ -263,6 +260,12 @@ class GPT(nn.Module):
 
         # init all weights
         self.apply(self._init_weights)
+
+        # with weight tying when using torch.compile() some warnings get generated:
+        # "UserWarning: functional_call was passed multiple values for tied weights.
+        # This behavior is deprecated and will be an error in future versions"
+        # not 100% sure what this is, so far seems to be harmless. TODO investigate
+        self.lm_head.weight = self.transformer.wte.weight # https://paperswithcode.com/method/weight-tying
 
         # import wte
         if self.config.import_wte_npy:
@@ -308,12 +311,38 @@ class GPT(nn.Module):
                     block.attn.bias = torch.tril(torch.ones(new_block_size, new_block_size)).view(1, 1, new_block_size, new_block_size)
 
     def _init_weights(self, module):
+        """
+        Custom weight initialization logic for GPT model.
+        """
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=self.config.linear_mean_init, std=self.config.linear_std_init)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=self.config.embedding_mean_init, std=self.config.embedding_std_init)
+            if self.config.init_variant == "gaussian" or module is self.transformer['wpe']:
+                torch.nn.init.normal_(
+                    module.weight,
+                    mean=self.config.embedding_mean_init,
+                    std=self.config.embedding_std_init
+                )
+            else:
+                init_fn = init_dictionary[self.config.init_variant]
+
+                # Generate custom init matrix
+                weight_data = init_fn(
+                    vocab_size=self.config.vocab_size,
+                    n_embd=self.config.n_embd
+                )
+
+                # Copy into the module's weight
+                with torch.no_grad():
+                    if weight_data.shape != module.weight.shape:
+                        raise ValueError(
+                            f"Init shape {weight_data.shape} does not match embedding shape {module.weight.shape} "
+                            f"for init_variant='{self.config.init_variant}'"
+                        )
+                    module.weight.copy_(weight_data)
+
 
     def update_num_angles(self, num_angles):
         """Update the number of angles for rotary embeddings in all attention layers."""

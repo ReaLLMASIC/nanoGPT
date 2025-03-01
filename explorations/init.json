@@ -1,0 +1,13 @@
+[
+  {
+    "block_size" : ["128"],
+    "n_layer" : ["5"],
+    "n_embd" : ["320"],
+    "n_head" : ["5"],
+    "dataset" :["billsum"],
+    "init_variant": ["hypercube", "gaussian"],
+    "use_abs_pos_embeddings": [true],
+    "compile": [true],
+    "tensorboard_run_name": ["init_sweep"]
+  }
+]

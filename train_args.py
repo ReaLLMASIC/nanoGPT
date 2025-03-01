@@ -300,6 +300,10 @@ def parse_args():
     model_group.add_argument( "--linear_mean_init", type=float, default=0.0)
     model_group.add_argument( "--linear_std_init", type=float, default=0.02)
 
+    ## Embedding Weight Initialization Options
+    embedding_init_variations = ["gaussian", "onehot", "hypercube"]
+    model_group.add_argument( "--init_variant", choices=embedding_init_variations, default="gaussian", help="options for embedding initializations")
+
     # Quantization
     model_group.add_argument("--full_quant_iteration", type=int, default=None,
                              help="The iteration where the model reaches full quantization. The increase from start_quant_level to full quantization is determined by the quant_scheduler.")

@@ -256,6 +256,9 @@ class GPTConfig:
     linear_mean_init: float= 0.0
     linear_std_init: float= 0.02
 
+    ## Embedding initialization options
+    init_variant: str = None
+
     # Quantizations
     start_quant_level: float = 0
     quant_scheduler: str = None
