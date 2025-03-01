@@ -271,11 +271,21 @@ def parse_args():
 
 
     # Attention Variations
+    attention_variants = ["causal", "linear", "ssm", "identity"]
+
+    model_group.add_argument(
+        "--attention_list",
+        nargs='+',
+        type=str,
+        default=None,
+        help="List of attention variants to cycle through, e.g. 'causal linear ssm'."
+    )
+
     model_group.add_argument(
         "--attention_variant",
         type=str,
         default="causal",
-        choices=["causal", "linear", "ssm"],
+        choices=attention_variants,
         help="Which attention variant to use for the Transformer blocks."
     )
 

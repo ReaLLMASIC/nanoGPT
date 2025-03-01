@@ -40,89 +40,7 @@ from variations.router_variations import router_dictionary
 from quantization.quantize import quantize_dictionary, dequantize, fake_quantize_act
 from quantization.quant_utils import set_variant, create_activation_buffers
 
-def create_shared_param_group(layer_type, config):
-    """
-    Creates a shared list of layer blocks (either MLP or Attn), optionally reusing blocks
-    every 'shared_size' layers, and optionally reflecting them symmetrically if
-    'shared_sym' is True. Also can handle multiple attention variants in one model.
-
-    Args:
-        layer_type (str): "mlp" or "attn"
-        config: a config object containing fields like:
-            - n_layer (int): number of layers total
-            - use_moe (bool): if True, some MLP layers replaced by MoE
-            - moe_layer_freq (int): frequency of MoE layers
-            - shared_mlp_size, shared_attn_size (int)
-            - shared_mlp_sym, shared_attn_sym (bool)
-            - shared_fire_embeddings (bool)
-            - attention_variants (list of str): e.g. ["causal", "fancy"] ...
-              if you want multiple attention types
-            - n_head, ...
-        Returns:
-            list of layer_blocks
-    """
-
-    # If you use FIRE for position embeddings in the attention layer:
-    from variations.position_encoding_variations import FIRE
-
-    # Determine if we are building MLP or attn blocks
-    if layer_type == "mlp":
-        shared_size = config.shared_mlp_size
-        shared_sym = config.shared_mlp_sym
-    elif layer_type == "attn":
-        shared_size = config.shared_attn_size
-        shared_sym = config.shared_attn_sym
-    else:
-        sys.exit(f"{layer_type} not supported, exiting")
-
-    # If attn layer, optionally build a single FIRE module to share
-    fire_pos_enc = None
-    if layer_type == "attn" and config.shared_fire_embeddings:
-        fire_pos_enc = FIRE(config, num_heads=config.n_head)
-
-    shared_group = []
-    layer_block = None
-
-    for i in range(config.n_layer):
-
-        # Create a new layer block every "shared_size"
-        if i % shared_size == 0:
-            if layer_type == "mlp":
-                # Possibly handle MoE
-                if config.use_moe and i % config.moe_layer_freq == 0:
-                    layer_block = MoELayer(config)
-                else:
-                    layer_block = get_mlp_instance(config)
-
-            elif layer_type == "attn":
-                attn_cls = attention_dictionary[config.attention_variant]
-
-                # Instantiate an attention layer
-                layer_block = attn_cls(config, fire_pos_enc=fire_pos_enc)
-            else:
-                sys.exit(f"{layer_type} not supported, exiting")
-
-        # Add this (possibly reused) block to the list
-        shared_group.append(layer_block)
-
-        # If symmetrical sharing is requested
-        if shared_sym:
-            # Even number of layers
-            if config.n_layer % 2 == 0:
-                # Once we reach halfway-1, we append the blocks in reverse
-                if i == (config.n_layer // 2 - 1):
-                    for j in range(i + 1):
-                        shared_group.append(shared_group[i - j])
-                    return shared_group
-            else:
-                # Odd number of layers
-                if i == (config.n_layer // 2):
-                    for j in range(i):
-                        shared_group.append(shared_group[i - j])
-                    return shared_group
-
-    return shared_group
-
+from shared_param_utils import SharedParamGroupCreator
 
 class Block(nn.Module):
     def __init__(self, config, mlp=None, attn=None):
@@ -182,10 +100,10 @@ class GPT(nn.Module):
 
         self.config = config
 
-        # Shared Parameters MLP
-        shared_mlp_array = create_shared_param_group("mlp", config)
-        # Shared Parameters Attention
-        shared_attn_array = create_shared_param_group("attn", config)
+        # Use the new SharedParamGroupCreator for MLP and Attn layers
+        spg_creator = SharedParamGroupCreator(config)
+        shared_mlp_array = spg_creator.create_shared_param_group("mlp")
+        shared_attn_array = spg_creator.create_shared_param_group("attn")
 
         # Factorization Parameters
         self.n_embd_wte = config.n_embd_wte
