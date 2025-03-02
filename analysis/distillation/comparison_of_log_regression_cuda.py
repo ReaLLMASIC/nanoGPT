@@ -140,16 +140,36 @@ def process_embedding_dims(min_pow, max_pow, regression_type, num_vectors, mean,
     plt.figure(figsize=(12, 8))
     for label, (x_vals, min_angles, trend, msei) in regression_trends.items():
         color = next(color_cycle)
-        plt.scatter(x_vals, min_angles, color=color, s=1, alpha=0.3,
-                    label=label.replace("Log", "Min Angle").replace("Exp", "Min Angle"))
+        # Plot the scatter
+        plt.scatter(
+            x_vals,
+            min_angles,
+            color=color,
+            s=1,
+            alpha=0.3,
+            label=label.replace("Log", "Min Angle").replace("Exp", "Min Angle")
+        )
+        # Determine line style
         linestyle = "--" if "Log" in label else "-."
-        plt.plot(x_vals, trend, color=color, linestyle=linestyle, linewidth=2,
-                 label=f"{label.replace('Min Log', 'Log Fit').replace('Min Exp', 'Exp Fit')} (MSEI={msei:.4f})")
+        # Plot the regression trend
+        plt.plot(
+            x_vals,
+            trend,
+            color=color,
+            linestyle=linestyle,
+            linewidth=2,
+            label=f"{label.replace('Min Log', 'Log Fit').replace('Min Exp', 'Exp Fit')} (MSEI={msei:.4f})"
+        )
 
     plt.xlabel("Number of Vectors Added")
     plt.ylabel("Angle (Degrees)")
     plt.title("Comparison of Regression Models Across Dimensions")
-    plt.legend()
+
+    # Get the current legend handles and labels, then reverse them
+    handles, labels = plt.gca().get_legend_handles_labels()
+    plt.legend(handles[::-1], labels[::-1], loc='upper right', framealpha=0.7)
+
+    # Save and close
     plt.savefig(f"angle_distribution_{regression_type}_comparison.png", dpi=300)
     plt.close()
 

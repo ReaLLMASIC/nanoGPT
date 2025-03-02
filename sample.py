@@ -1,3 +1,4 @@
+# sample.py
 import argparse
 import json
 import os
@@ -11,7 +12,9 @@ import numpy as np
 import seaborn as sns
 import torch
 import tiktoken
+import io
 from rich import print
+from rich.text import Text
 from rich.console import Console
 from torch.nn import functional as F
 from collections import OrderedDict
@@ -76,6 +79,40 @@ def parse_args():
 
     return parser.parse_args()
 
+
+
+def convert_rich_text_to_ansi(rich_text: Text) -> str:
+    # 1) Create an in-memory buffer
+    buffer = io.StringIO()
+
+    # 2) Create a Console that writes into the buffer, forcing ANSI output
+    temp_console = Console(
+        file=buffer,
+        force_terminal=True,        # force Rich to generate ANSI codes
+        color_system="truecolor"    # or "standard"/"256" if you prefer
+    )
+
+    # 3) Print Rich Text to the temp_console
+    temp_console.print(rich_text)
+
+    # 4) Extract the ANSI-encoded string
+    return buffer.getvalue()
+
+def append_to_sample_file(sample_file, output_line, start_token, iter_num=None):
+    with open(sample_file, "a") as file:
+        header = '\n---------------'
+        if start_token is not None:
+            header += f"\n start_token: {repr(start_token)} \n"
+        if iter_num is not None:
+            header += f"\n iter_num {iter_num} \n"
+        header += '---------------\n'
+
+        # If it's a Rich Text object, convert it to an ANSI string
+        if isinstance(output_line, Text):
+            output_line = convert_rich_text_to_ansi(output_line)
+
+        file.write(header + output_line + '\n')
+
 def colorize_text(tokens, raw_logits, decode, colorize_mode='minmax'):
     """
     Colorizes each token according to one of two modes:
@@ -121,8 +158,6 @@ def colorize_text(tokens, raw_logits, decode, colorize_mode='minmax'):
         text.append(token_str, style=f"bold #{r:02x}{g:02x}00")
     return text
 
-
-
 def save_chart(probs, idx, decode, step, out_dir, last_k_tokens, chart_type, selected_token):
     top_k_probs, top_k_indices = torch.topk(probs, k=probs.size(-1))
     top_k_tokens = [decode([top_k_indices[0, i].item()]) for i in range(top_k_indices.size(1))]
@@ -149,6 +184,88 @@ def save_chart(probs, idx, decode, step, out_dir, last_k_tokens, chart_type, sel
     os.makedirs(out_dir, exist_ok=True)
     plt.savefig(out_path)
     plt.close()
+
+
+def sample_with_existing_model(
+    model,
+    start_ids,
+    decode,
+    device="cuda",
+    max_new_tokens=200,
+    temperature=0.8,
+    top_k=200,
+    start_tokens=None,
+    colorize_output=False,
+    colorize_mode='minmax',
+    token_boundary=None,
+    show_heatmaps=False,
+    chart_type='heatmap',
+    last_k_tokens=10,
+    out_dir="out",
+    sample_file=None,
+    num_samples=1,
+    iter_num=None
+):
+    """
+    A helper function to generate text from an *already-loaded* GPT model,
+    reusing the same checkpoint and device from train.py, or any other script.
+    """
+    from rich.console import Console
+    from torch.nn import functional as F
+
+    console = Console()
+    model.eval()
+
+    for _ in range(num_samples):
+        x = start_ids.clone()
+        tokens_for_color = []
+        logits_for_color = []
+
+        with torch.no_grad():
+            for step in range(max_new_tokens):
+                idx_cond = x if x.size(1) <= model.config.block_size else x[:, -model.config.block_size:]
+                logits, _ = model(idx_cond)
+                logits = logits[:, -1, :] / temperature
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float('Inf')
+                probs = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs, num_samples=1)
+                x = torch.cat((x, idx_next), dim=1)
+
+                if colorize_output:
+                    if colorize_mode in ('softmax', 'softmax_top_k'):
+                        # store the entire logits row or top-k row for colorization
+                        logits_for_color.append(logits[0].clone())
+                    else:
+                        # store only chosen-token logit
+                        logits_for_color.append(logits[0, idx_next.item()])
+                    tokens_for_color.append(idx_next.item())
+
+                if show_heatmaps:
+                    # Demonstration of saving a chart for each step if needed:
+                    selected_token = decode([idx_next[0].item()])
+                    save_chart(probs, x, decode, step, out_dir, last_k_tokens, chart_type, selected_token)
+
+        # Now decode
+        output_text = decode(x[0].tolist())
+        if token_boundary:
+            # Optionally replace boundary tokens
+            output_text = output_text.replace(token_boundary, " ")
+
+        colored_text = ""
+        if colorize_output:
+            colored_text = colorize_text(tokens_for_color, logits_for_color, decode, colorize_mode=colorize_mode)
+            console.print("[bold orange]--- Sample Below ---[/bold orange]")
+            console.print(colored_text)
+        else:
+            console.print("[bold green]" + output_text + "[/bold green]")
+
+        if sample_file:
+            append_to_sample_file(sample_file, output_text, start_tokens, iter_num)
+        if colorize_output:
+            append_to_sample_file(sample_file, colored_text, start_tokens, iter_num)
+
 
 
 def interactive_generation(model, start_ids, device, max_new_tokens, temperature, top_k, stop_string, decode, encode):
@@ -488,8 +605,8 @@ def main():
                         print("[bold green]" + output_line)
 
                     if args.sample_file:
-                        with open(args.sample_file, "w") as file:
-                            file.write(output_line)
+                        append_to_sample_file(args.sample_file, output_line, args.start_token, iter_num=None)
+
 
 if __name__ == "__main__":
     main()

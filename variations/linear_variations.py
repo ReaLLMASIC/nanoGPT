@@ -1,3 +1,4 @@
+# variations/linear_variations.py
 import torch
 import torch.nn as nn
 import math
@@ -334,7 +335,7 @@ class KAL_Net(nn.Module):
         # polynomial_order: Order up to which Legendre polynomials are calculated
         self.polynomial_order = config.kan_poly_order
         # base_activation: Activation function used after each layer's computation
-        self.base_activation = activation_dictionary[config.kan_base_activation]
+        self.base_activation = activation_dictionary[config.kan_base_activation](config)
 
         # ParameterList for the base weights of each layer
         self.base_weights = nn.ParameterList()

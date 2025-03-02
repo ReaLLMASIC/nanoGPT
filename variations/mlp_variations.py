@@ -1,4 +1,4 @@
-# mlp_variations.py
+# variations/mlp_variations.py
 
 import torch
 import torch.nn as nn
@@ -116,9 +116,23 @@ class OriginalMLP(nn.Module):
             x = fake_quantize_act(self, "mlp_act_output", x, num_bits, quant_method, iter_num)
         return x
 
+class KanMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        self.kan = linear_dictionary["kan"](config.n_embd, config.n_embd, config=config)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x, iter_num=None):
+
+        x = self.kan(x)
+        x = self.dropout(x)
+
+        return x
 
 mlp_dictionary = {
-    "mlp": OriginalMLP
+    "mlp": OriginalMLP,
+    "kan": KanMLP
     }
 
 def get_mlp_instance(config):

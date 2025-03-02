@@ -23,8 +23,8 @@ python3 train.py \
 --init_from "gpt2" \
 --out_dir out_gpt2_wte_random \
 --dataset openwebtext \
---import_wte_npy  "./factorization_util/random_init/100_wte.npy" \
---import_scale_matrices_npz  "./factorization_util/random_init/100_scale_matrices.npz" \
+--import_wte_npy  "./util_factorization/random_init/100_wte.npy" \
+--import_scale_matrices_npz  "./util_factorization/random_init/100_scale_matrices.npz" \
 --n_embd_wte 100 \
 --max_iters 20000 \
 --sample_each_eval \

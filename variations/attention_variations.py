@@ -409,10 +409,10 @@ class HymbaRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 class MambaBlock(nn.Module):
-    """ This function contains code adapted from [Hymba](https://github.com/NVlabs/hymba/) 
+    """ This function contains code adapted from [Hymba](https://github.com/NVlabs/hymba/)
     by the NVIDIA team, licensed under the [NVIDIA Open Model License Agreement]
     (https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
-    """  
+    """
     def __init__(self, config, fire_pos_enc=None):
         super().__init__()
 
@@ -430,7 +430,7 @@ class MambaBlock(nn.Module):
             kernel_size=self.conv_kernel_size,
             groups=self.d_inner,
             padding=self.conv_kernel_size - 1
-        )       
+        )
 
         num_ssm_param = 1
         self.in_proj = nn.ModuleList([nn.Linear(self.d_model, self.d_inner * 2, bias=self.io_bias)])
@@ -448,7 +448,7 @@ class MambaBlock(nn.Module):
         self.B_layernorm = HymbaRMSNorm(self.d_state, eps=1e-06)
         self.C_layernorm = HymbaRMSNorm(self.d_state, eps=1e-06)
         self.scan_outputs_layernorm = HymbaRMSNorm(self.d_inner)
-    
+
     def _apply_layernorms(self, dt, B, C):
         if self.dt_layernorm is not None:
             dt = self.dt_layernorm(dt)
@@ -458,7 +458,7 @@ class MambaBlock(nn.Module):
             C = self.C_layernorm(C)
         return dt, B, C
 
-    def forward(self, x, gate):
+    def forward(self, x, gate, iter_num=None):
         '''
         Parameters:
             x: (batch_size, seqlen, d_model)
@@ -489,7 +489,7 @@ class MambaBlock(nn.Module):
         hidden_states = causal_conv1d_fn(
             hidden_states, conv_weights, self.conv1d.bias, activation="silu"
         )
-        
+
         ssm_parameters = self.x_proj[index](hidden_states.transpose(1, 2))
         delta, B, C = torch.split(ssm_parameters, [self.dt_rank, self.d_state, self.d_state], dim=-1)
         delta, B, C = self._apply_layernorms(delta, B, C)
@@ -515,7 +515,7 @@ class MambaBlock(nn.Module):
             delta_softplus=True,
             return_last_state=True,
         )                                           # (batch_size, d_inner, seqlen)
-        
+
         if len(outputs) == 3:
             scan_outputs, _, _ = outputs            # scan_outputs, ssm_state, last_state
                                                     # ssm_state are updated inplace
@@ -528,8 +528,16 @@ class MambaBlock(nn.Module):
         output = self.out_proj[index](scan_outputs)
         return output
 
+class Identity(nn.Module):
+    def __init__(self, config, fire_pos_enc=None):
+        super(Identity, self).__init__()
+
+    def forward(self, x, iter_num=None):
+        return x
+
 attention_dictionary = {
     "causal": CausalSelfAttention,
     "linear": LinearAttention,
     "ssm": MambaBlock,
+    "identity": Identity,
 }

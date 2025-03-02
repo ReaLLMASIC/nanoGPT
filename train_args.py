@@ -122,6 +122,22 @@ def parse_args():
     training_group.add_argument("--plateau_patience", type=int, default=10, help="Number of epochs with no improvement for ReduceLROnPlateau.")
 
 
+    # Training sample *args
+    training_group.add_argument('--interactive', default=False, action=argparse.BooleanOptionalAction, help="Enable interactive generation at the end of training (similar to sample.py --interactive).")
+    training_group.add_argument('--stop_string', type=str, default='~W', help="String to stop generation and allow user input (used when --interactive).")
+    training_group.add_argument('--colorize_output', default=True, action=argparse.BooleanOptionalAction, help="Colorize tokens based on predicted probabilities.")
+    training_group.add_argument('--colorize_mode', type=str, default='minmax', choices=['minmax', 'softmax', 'softmax_top_k'], help="Colorization mode for tokens (see sample.py).")
+    training_group.add_argument('--show_heatmaps', default=False, action=argparse.BooleanOptionalAction, help="Show heatmaps (or bar charts) of top-k token probabilities.")
+    training_group.add_argument('--chart_type', type=str, default='heatmap', choices=['heatmap', 'barchart'], help="Type of chart to display if --show_heatmaps is set.")
+    training_group.add_argument('--last_k_tokens', type=int, default=10, help="Number of last tokens to display in heatmaps or bar charts.")
+    training_group.add_argument('--sample_file', type=str, default=None, help="Output file for inference samples (if you want to save them).")
+    training_group.add_argument('--token_boundary', type=str, default=None, help="Optional separator string between emitted tokens (for decode).")
+    training_group.add_argument('--num_samples', type=int, default=1, help="Number of generated samples during sampling.")
+    training_group.add_argument('--temperature', type=float, default=0.8, help="Temperature for predictions (1.0 = normal, < 1.0 = less random).")
+    training_group.add_argument('--top_k', type=int, default=200, help="Retain only the top_k most likely tokens (used in sample.py).")
+    training_group.add_argument('--eval_dataset', type=str, default=None, help="Optional dataset name for custom evaluation splits.")
+    training_group.add_argument('--quantization_data_file', type=str, default=None, help="If set, export quantized weights/activations to a specified file (pkl).")
+
     # Model args
     model_group.add_argument('--block_size', default=256, type=int)
     model_group.add_argument('--n_layer', default=6, type=int)
@@ -271,11 +287,21 @@ def parse_args():
 
 
     # Attention Variations
+    attention_variants = ["causal", "linear", "ssm", "identity"]
+
+    model_group.add_argument(
+        "--attention_list",
+        nargs='+',
+        type=str,
+        default=None,
+        help="List of attention variants to cycle through, e.g. 'causal linear ssm'."
+    )
+
     model_group.add_argument(
         "--attention_variant",
         type=str,
         default="causal",
-        choices=["causal", "linear", "ssm"],
+        choices=attention_variants,
         help="Which attention variant to use for the Transformer blocks."
     )
 
@@ -570,6 +596,9 @@ def parse_args():
     logging_group.add_argument('--tensorboard_log_dir', type=str, default='logs')
     logging_group.add_argument('--tensorboard_run_name', type=str, default='logs-test')
     logging_group.add_argument('--tensorboard_graph', default=True, action=argparse.BooleanOptionalAction)
+
+    ## Export Model graph
+    logging_group.add_argument('--export_model_graph', default=False, action=argparse.BooleanOptionalAction, help="exports tensorboard model of graph")
 
     # Onnx args
     logging_group.add_argument('--onnx_output', default=False, action=argparse.BooleanOptionalAction)

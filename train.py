@@ -26,6 +26,9 @@ from utils.statistic_plots import (
     create_statistics,
 )
 
+
+from sample import sample_with_existing_model
+
 from rich.progress import Progress
 
 # GNS Related
@@ -89,7 +92,7 @@ class Trainer:
         self.setup()
 
         if self.args.sample_only:
-            self.sample_and_print(self.args.max_sample_tokens, start_tokens=self.args.sample_start_tokens)
+            self.sample_and_print()
 
         if self.args.create_statistics:
             self.stats = initialize_statistics(self.args.n_layer, self.args.n_head)
@@ -416,9 +419,11 @@ class Trainer:
         return ''.join(chars)
 
     @torch.no_grad()
-    def sample_and_print(self, max_sample_tokens, start_tokens="\n"):
+    def sample_and_print(self):
         # Do one iteration per lsv, default to one with no lsv
         sample_iterations = 1
+
+        self.model.eval()
 
         if self.args.dataset_list is not None:
             sample_iterations = len(self.args.dataset_list)
@@ -428,21 +433,29 @@ class Trainer:
                 self.model.set_lsv_index(i)
                 print(f"lsv index {i}")
 
-            start_ids = torch.tensor(self.encode(start_tokens), dtype=torch.long, device=self.device)[None, ...]
-            x = start_ids
+            start_ids = torch.tensor(self.encode(self.args.sample_start_tokens), dtype=torch.long, device=self.device)[None, ...]
 
             with torch.no_grad():
-                for _ in range(max_sample_tokens):
-                    x_cond = x if x.size(1) <= self.args.block_size else x[:, -self.args.block_size:]
-                    logits, _ = self.model(x_cond, iter_num=self.iter_num)
-                    logits = logits[:, -1, :]
-                    probs = torch.softmax(logits, dim=-1)
-                    next_id = torch.multinomial(probs, num_samples=1)
-                    x = torch.cat((x, next_id), dim=1)
+                sample_with_existing_model(
+                    model=self.model,
+                    start_ids=start_ids,
+                    start_tokens=self.args.sample_start_tokens,
+                    decode=self.decode,
+                    device=self.device,
+                    out_dir=self.args.out_dir,
+                    max_new_tokens=self.args.max_sample_tokens,
+                    temperature=self.args.temperature,
+                    top_k=self.args.top_k,
+                    colorize_output=self.args.colorize_output,
+                    colorize_mode=self.args.colorize_mode,
+                    token_boundary=(self.args.token_boundary or None),
+                    show_heatmaps=self.args.show_heatmaps,
+                    sample_file=self.args.sample_file,
+                    iter_num=self.iter_num,
+                    num_samples=self.args.num_samples
+                )
 
-            sampled_text = self.decode(x[0].tolist())
-            print(f"Start tokens:\n{start_tokens}\n")
-            print(f"Sampled text:\n{sampled_text}\n")
+        self.model.train()
 
     def get_vocab_size_from_meta(self):
         # Data loader
@@ -799,9 +812,8 @@ class Trainer:
 
     def log_metrics(self, losses, running_mfu, epoch, tokens_trained, target_dataset):
 
-        if self.iter_num == 0 and self.args.tensorboard_log:
+        if self.iter_num == 0 and self.args.tensorboard_log and self.args.export_model_graph == True:
             self.export_model_graph()
-
 
         if self.args.tensorboard_log:
             # Log metrics for each dataset separately
@@ -1017,7 +1029,7 @@ class Trainer:
                             self.save_checkpoint('ckpt.pt')
                         # Sample
                         if self.args.max_sample_tokens:
-                            self.sample_and_print(self.args.max_sample_tokens, start_tokens=self.args.sample_start_tokens)
+                            self.sample_and_print()
                         # export embedding table to npy file
                         if self.args.export_wte_npy:
                             self.raw_model.export_wte(self.args.export_wte_npy)
@@ -1152,7 +1164,7 @@ class Trainer:
 
                         # Sample if set
                         if self.args.max_sample_tokens:
-                            self.sample_and_print(self.args.max_sample_tokens, start_tokens=self.args.sample_start_tokens)
+                            self.sample_and_print()
                     break
 
             if self.args.plot_statistics:
