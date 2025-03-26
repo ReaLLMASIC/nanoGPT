@@ -51,7 +51,7 @@ for tsvfile in "$out_dir"/*.tsv; do
         echo "Processing $tsvfile..."
         # Get the filename without the extension for output filename
         filename=$(basename "${tsvfile%.tsv}")
-        python3 utils/tsv_to_json_cv_pandas.py "$tsvfile" "$output_file"
+        python3 "$script_dir"/utils/tsv_to_json_cv_pandas.py "$tsvfile" "$output_file"
     fi
 done
 
@@ -60,11 +60,11 @@ echo "All .tsv files have been processed."
 # # Run program to convert sentences into IPA format.
 output_json_with_ipa="ja_ipa.json"
 echo "Converting sentences to IPA..."
-python3 utils/ja2ipa.py  -j "$output_file" "$output_json_with_ipa" --use_mecab
+python3 "$script_dir"/utils/ja2ipa.py  -j "$output_file" "$output_json_with_ipa" --use_mecab
 echo "IPA conversion finished."
 
 output_ipa_txt="ja_ipa.txt"
-python3 utils/extract_json_values.py "$output_json_with_ipa" "spaced_ipa" "$output_ipa_txt"
+python3 "$script_dir"/utils/extract_json_values.py "$output_json_with_ipa" "spaced_ipa" "$output_ipa_txt"
 echo "IPA extraction finished."
 
 #TODO(gkielian): see if we can fix the parsing of rows instead of deleting
@@ -75,4 +75,4 @@ wc -l "$output_ipa_txt"
 
 
 # Tokenization step to create train.bin and val.bin files.
-python3 prepare.py -t "$output_ipa_txt" --method char
+python3 "$script_dir"/prepare.py -t "$output_ipa_txt" --method char

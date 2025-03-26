@@ -52,7 +52,7 @@ for tsvfile in "$out_dir"/*.tsv; do
         echo "Processing $tsvfile..."
         # Get the filename without the extension for output filename
         filename=$(basename "${tsvfile%.tsv}")
-        python3 utils/tsv_to_json_cv.py "$tsvfile" "$output_file"
+        python3 "$script_dir"/utils/tsv_to_json_cv.py "$tsvfile" "$output_file"
     fi
 done
 
@@ -60,13 +60,13 @@ echo "All .tsv files have been processed."
 
 # Run program to convert sentences into IPA format.
 echo "Converting sentences to IPA..."
-python3 ./utils/ko_en_to_ipa.py "$output_file" --input_json_key "sentence" --output_json_key "sentence_ipa"
+python3 "$script_dir"/utils/ko_en_to_ipa.py "$output_file" --input_json_key "sentence" --output_json_key "sentence_ipa"
 
 output_ipa="ko_ipa.txt"
 echo "export IPA to txt file"
-python3 ./utils/extract_json_values.py "$output_file" "sentence_ipa" "$output_ipa"
+python3 "$script_dir"/utils/extract_json_values.py "$output_file" "sentence_ipa" "$output_ipa"
 
 echo "IPA conversion finished."
 
 # Tokenization step to create train.bin and val.bin files.
-python3 prepare.py -t "$output_ipa" --method char
+python3 "$script_dir"/prepare.py -t "$output_ipa" --method char
