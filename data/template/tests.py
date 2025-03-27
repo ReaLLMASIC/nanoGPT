@@ -2,7 +2,8 @@
 
 import unittest
 import os
-import sys  # Import sys to exit with error codes
+import sys
+import pickle
 from tokenizers import (
     NumericRangeTokenizer,
     SentencePieceTokenizer,
@@ -15,7 +16,6 @@ from argparse import Namespace
 from rich.console import Console
 from rich.theme import Theme
 from rich.table import Table
-from rich.text import Text
 
 console = Console(theme=Theme({
     "pass": "bold green",
@@ -26,7 +26,6 @@ console = Console(theme=Theme({
     "output": "bold magenta",
     "info": "bold blue",
 }))
-
 
 class RichTestResult(unittest.TestResult):
     def __init__(self):
@@ -70,12 +69,10 @@ def run_tests():
     table.add_column("Result", justify="center")
     for test, status in result.test_results:
         test_name = test._testMethodName
-        if status == 'PASS':
-            style = "pass"
-        else:
-            style = "fail"
+        style = "pass" if status == 'PASS' else "fail"
         table.add_row(test_name, f"[{style}]{status}[/{style}]")
     console.print(table)
+
     # Exit with error code if any test failed
     if not result.wasSuccessful():
         sys.exit(1)  # Exit with status code 1 if tests failed
@@ -110,6 +107,39 @@ class TestTokenizers(unittest.TestCase):
         if os.path.exists("remaining.txt"):
             os.remove("remaining.txt")
 
+    # --------------------------------------------------------------------------
+    # Helper Method to Print Token Count Histogram
+    # --------------------------------------------------------------------------
+    def _print_token_count_histogram(self, token_counts, itos):
+        """
+        Prints a histogram of all tokens in `token_counts`, sorted by descending frequency.
+        Columns: Token ID, Actual Token, Count, Bar
+        """
+
+        if not token_counts:
+            console.print("[info]No token counts to display.[/info]")
+            return
+
+        console.print("[info]Token Count Histogram (All Tokens):[/info]")
+        table = Table("Token ID", "Token", "Count", "Bar", title="Histogram")
+
+        # Sort all tokens in descending order by count
+        sorted_counts = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
+        max_count = max(token_counts.values())
+
+        for token_id, count in sorted_counts:
+            token_str = itos.get(token_id, f"<UNK:{token_id}>")
+            bar_len = 20  # max width in characters
+            filled = int((count / max_count) * bar_len)
+            bar_str = "█" * filled
+            table.add_row(str(token_id), repr(token_str), str(count), bar_str)
+
+        console.print(table)
+        console.print()  # extra newline
+
+    # --------------------------------------------------------------------------
+    # Tokenizer Tests
+    # --------------------------------------------------------------------------
     def test_numeric_range_tokenizer(self):
         args = Namespace(min_token=100, max_token=1000)
         tokenizer = NumericRangeTokenizer(args)
@@ -192,7 +222,7 @@ class TestTokenizers(unittest.TestCase):
             f.write('a\nb\nc\n\\n')
 
         tokenizer = CustomCharTokenizerWithByteFallback(args)
-        test_string = 'abc😊d\nefg'
+        test_string = "abc😊😊dd\nefg"
 
         ids = tokenizer.tokenize(test_string)
         detokenized = tokenizer.detokenize(ids)
@@ -203,20 +233,172 @@ class TestTokenizers(unittest.TestCase):
         console.print(detokenized, style="output")
 
         console.print("[info]Characters that used byte fallback:[/info]")
-        bft = [] # Byte Fallback Tokens
+        bft = []
         for char in detokenized:
-            if char not in tokenizer.custom_chars:
-                char = repr(char)
-                bft.append(char)
+            # If it's not in the custom tokens, we consider it fallback
+            if char not in tokenizer.custom_tokens:
+                bft.append(repr(char))
 
         console.print(", ".join(bft), style="info")
 
         self.assertEqual(test_string, detokenized)
-        print("CustomCharTokenizerWithByteFallback test passed.")
+        console.print("CustomCharTokenizerWithByteFallback test passed.")
 
         # Clean up
         if os.path.exists(args.custom_chars_file):
             os.remove(args.custom_chars_file)
+
+
+    # --------------------------------------------------------------------------
+    # Tests for Token Counts (with histogram printing)
+    # --------------------------------------------------------------------------
+    def test_numeric_range_tokenizer_counts(self):
+        args = Namespace(min_token=100, max_token=1000, track_token_counts=True)
+        tokenizer = NumericRangeTokenizer(args)
+        ids = tokenizer.tokenize(self.numeric_data)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+
+        # Retrieve the itos mapping so we can display actual tokens in the histogram
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match number of tokens."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts, 
+                          "Each token id should appear in token_counts.")
+
+    def test_sentencepiece_tokenizer_counts(self):
+        with open("spm_input.txt", "w") as f:
+            f.write(self.sample_text)
+
+        args = Namespace(
+            vocab_size=30,
+            spm_model_file=None,
+            spm_vocab_file=None,
+            skip_tokenization=False,
+            track_token_counts=True
+        )
+        tokenizer = SentencePieceTokenizer(args, input_files="spm_input.txt")
+        ids = tokenizer.tokenize(self.sample_text)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match number of tokens for SentencePiece."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+    def test_tiktoken_tokenizer_counts(self):
+        args = Namespace(tiktoken_encoding='gpt2', track_token_counts=True)
+        tokenizer = TiktokenTokenizer(args)
+        ids = tokenizer.tokenize(self.sample_text)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for Tiktoken."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+    def test_custom_tokenizer_counts(self):
+        args = Namespace(tokens_file=self.tokens_file, track_token_counts=True)
+        tokenizer = CustomTokenizer(args)
+        ids = tokenizer.tokenize(self.sample_text)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for CustomTokenizer."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+    def test_char_tokenizer_counts(self):
+        args = Namespace(reuse_chars=False, track_token_counts=True)
+        tokenizer = CharTokenizer(args, self.sample_text, None)
+        ids = tokenizer.tokenize(self.sample_text)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for CharTokenizer."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+    def test_custom_char_tokenizer_with_byte_fallback_counts(self):
+        args = Namespace(custom_chars_file="custom_chars.txt", track_token_counts=True)
+        test_string = "abc😊😊dd\nefg"
+        with open(args.custom_chars_file, 'w', encoding='utf-8') as f:
+            f.write('a\nb\nc\n\\n')
+
+        tokenizer = CustomCharTokenizerWithByteFallback(args)
+        ids = tokenizer.tokenize(test_string)
+
+        with open("meta.pkl", "rb") as f:
+            meta = pickle.load(f)
+        token_counts = meta.get("token_counts", {})
+        itos = meta.get("itos", {})
+
+        # Print histogram
+        self._print_token_count_histogram(token_counts, itos)
+
+        self.assertEqual(
+            sum(token_counts.values()), 
+            len(ids),
+            "Total token counts should match for CustomCharTokenizerWithByteFallback."
+        )
+        for token_id in ids:
+            self.assertIn(token_id, token_counts)
+
+        # Clean up
+        if os.path.exists(args.custom_chars_file):
+            os.remove(args.custom_chars_file)
+
 
 if __name__ == '__main__':
     run_tests()
