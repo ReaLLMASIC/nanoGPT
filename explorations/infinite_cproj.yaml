@@ -1,0 +1,28 @@
+# infinite_cproj.yaml
+---
+
+# base hyperparameters
+max_iters: [10000]
+# n_layer: [6]
+# n_head: [6]
+# n_embd: [384]
+# block_size: [256]
+device: ["cuda"]
+dtype: ["float16"]
+dataset: ["cosmopedia_100k"]
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
+
+# Inf attention parameters
+n_qk_head_dim: [64, 96, 128]
+n_v_head_dim: [64, 96, 128]
+use_concat_heads: [true, false]
+
+# conditional options
+n_cproj:
+  conditions:
+    - ["use_concat_heads", false]
+  options: ["1", "6", "12", "18"]
+
+# boolean flags
+compile: [true]

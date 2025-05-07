@@ -628,6 +628,8 @@ class InfiniteHeadAttention(nn.Module):
         self.n_embd = config.n_embd
         self.n_qk_head_dim = config.n_qk_head_dim
         self.n_v_head_dim = config.n_v_head_dim
+        self.use_concat_heads = config.use_concat_heads
+        self.n_cproj = config.n_cproj
 
         self.linear_variant_q = linear_dictionary[config.linear_variant_attn]
         self.linear_variant_k = linear_dictionary[config.linear_variant_attn]
@@ -638,7 +640,6 @@ class InfiniteHeadAttention(nn.Module):
         self.c_attn_q = self.linear_variant_q(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_k = self.linear_variant_k(self.n_embd, self.n_head * self.n_qk_head_dim, config, bias=config.bias)
         self.c_attn_v = self.linear_variant_v(self.n_embd, self.n_head * self.n_v_head_dim, config, bias=config.bias)
-        self.c_proj = self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
 
         # Regularization
         self.attn_dropout = nn.Dropout(config.dropout)
@@ -652,6 +653,15 @@ class InfiniteHeadAttention(nn.Module):
         # Rotary Positional Embeddings
         self.rotary_emb_q = None
         self.rotary_emb_k = None
+
+        if self.use_concat_heads:
+            self.c_proj = self.linear_variant_attn_proj(self.n_head * self.n_v_head_dim, self.n_embd, config, bias=config.bias)
+        else:
+            self.c_proj_list = nn.ModuleList([
+                self.linear_variant_attn_proj(self.n_v_head_dim, self.n_embd, config, bias=config.bias)
+                for _ in range(self.n_cproj)
+            ])
+
 
         # Softmax Variant Selection
         self.softmax_variant_attn = config.softmax_variant_attn
@@ -689,10 +699,17 @@ class InfiniteHeadAttention(nn.Module):
 
         att = self.attn_dropout(att)
 
-        y = (att @ v).sum(dim=1)  # Sum over all heads instead of concatenation
+        if self.use_concat_heads:
+            # (B, nh, T, v_dim) ──▶ (B, T, nh*v_dim)
+            y = (att @ v).transpose(1, 2).contiguous().view(B, T, self.n_head * self.n_v_head_dim)
+            y = self.resid_dropout(self.c_proj(y))
+        else:
+            # (B, nh, T, v_dim) summed over heads → (B, T, v_dim)
+            y_sum = (att @ v).sum(dim=1)
 
-        # output projection
-        y = self.resid_dropout(self.c_proj(y))
+            # Apply each c_proj and accumulate results
+            proj_total = sum(proj(y_sum) for proj in self.c_proj_list)
+            y = self.resid_dropout(proj_total)
 
         return y
 

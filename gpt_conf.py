@@ -17,6 +17,8 @@ class GPTConfig:
     ## Inf attention variation
     n_qk_head_dim: int = None
     n_v_head_dim: int = None
+    n_cproj: int = None
+    use_concat_heads: bool = False
 
     # Learned Position Embeddings
     n_lpe: int = 0
