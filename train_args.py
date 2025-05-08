@@ -86,6 +86,7 @@ def parse_args():
                             "adagrad",
                             "rmsprop",
                             "nadam",
+                            "orthoadam",
                             ]
     training_group.add_argument("--optimizer", type=str, default="adamw",
                                  choices=optimizer_variations,

@@ -10,8 +10,6 @@ import shutil
 import sys
 import time
 
-import torch.onnx
-
 from utils.gpu_monitoring import get_gpu_memory_info
 from utils.model_info import (
     print_summary,
@@ -31,7 +29,6 @@ from sample import (
     custom_char_with_byte_fallback_decode as ccwb_decode,
 )
 
-
 from rich.progress import Progress
 
 # GNS Related
@@ -40,10 +37,15 @@ from utils.gns_monitoring.hook import (add_hooks_to_model, add_sogns_hooks,
                    add_exact_hooks,  gather_hook_results)
 
 import numpy as np
+
+# Torch
 import torch
+import torch.onnx
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.optimizer import Optimizer
+
 from variations.model_variations import model_variation_dictionary
 
 from model import GPT, GPTConfig
@@ -53,6 +55,34 @@ import tiktoken
 
 from train_args import parse_args
 
+# TODO: bring optimizer into own train_variations file
+class OrthoAdam(Optimizer):
+    """OrthoAdam: transforms grads via orthogonal Q before Adam updates."""
+    def __init__(self, params, lr=1e-3, betas=(0.9,0.999), eps=1e-8, weight_decay=0):
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+        # for each param, store a fixed orthogonal Q matrix
+        self._Q = {}
+        for group in self.param_groups:
+            for p in group['params']:
+                n = p.numel()
+                # initialise identity Q (placeholder orthogonal)
+                self._Q[p] = torch.eye(n, device=p.device, dtype=p.dtype)
+
+    def step(self, closure=None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            beta1, beta2 = group['betas']
+            for p in group['params']:
+                if p.grad is None: continue
+                g = p.grad.data.view(-1)
+                Q = self._Q[p]
+                # rotate gradient
+                g_new = Q.matmul(g).view_as(p.grad.data)
+                p.grad.data.copy_(g_new)
+        # fallback to AdamW update
+        torch.optim.AdamW.step(self, closure)
+        return loss
 
 class Trainer:
 
@@ -340,6 +370,13 @@ class Trainer:
         elif self.args.optimizer == "nadam":
             self.args.nadam_betas = tuple(self.args.nadam_betas)
             optimizer = torch.optim.NAdam(param_groups, lr=self.args.learning_rate, betas=tuple(self.args.nadam_betas), eps=self.args.nadam_eps, weight_decay=self.args.weight_decay)
+        elif self.args.optimizer == "orthoadam":
+            optimizer = self.OrthoAdam(
+                [p for pg in param_groups for p in pg['params']],
+                lr=self.args.learning_rate,
+                betas=(self.args.beta1, self.args.beta2),
+                eps=self.args.adamw_eps if hasattr(self.args, 'adamw_eps') else 1e-8,
+                weight_decay=self.args.weight_decay)
         else:
             raise ValueError(f"Unknown optimizer: {self.args.optimizer}")
 
@@ -358,7 +395,6 @@ class Trainer:
             return torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode=self.args.plateau_mode, factor=self.args.plateau_factor, patience=self.args.plateau_patience)
         else:
             raise ValueError(f"Unknown scheduler: {self.args.lr_scheduler}")
-
 
     def load_tokenizer(self):
         meta_path = os.path.join('data', self.args.dataset, 'meta.pkl')
