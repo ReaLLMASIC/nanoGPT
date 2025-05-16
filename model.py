@@ -146,6 +146,9 @@ class GPT(nn.Module):
 
         self.config = config
 
+        # Final-logit softcapping
+        self.final_logit_softcapping = config.final_logit_softcapping
+
         # Use the new SharedParamGroupCreator for MLP and Attn layers
         spg_creator = SharedParamGroupCreator(config)
         shared_mlp_array = spg_creator.create_shared_param_group("mlp")
@@ -462,11 +465,18 @@ class GPT(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
+
+        if self.config.final_logit_softcapping is not None:
+            logits = logits / self.config.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.config.final_logit_softcapping
+
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
 

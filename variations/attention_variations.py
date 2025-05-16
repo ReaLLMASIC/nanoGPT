@@ -22,6 +22,8 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config, fire_pos_enc=None):
         super().__init__()
 
+        self.attn_logit_softcapping = config.attn_logit_softcapping
+
         self.full_quant_iteration = config.full_quant_iteration
         self.eval_interval = config.eval_interval
         self.start_quant_level = config.start_quant_level
@@ -180,6 +182,10 @@ class CausalSelfAttention(nn.Module):
                 self.flash = False
                 print("flash attention removed due to Quantization")
                 break
+
+        if self.attn_logit_softcapping:
+            self.flash = False
+            print("flash attention removed due to attn logit softcapping")
 
         if self.disable_flash_attention:
             self.flash = False
@@ -345,6 +351,12 @@ class CausalSelfAttention(nn.Module):
                 att = att * self.qk_norm_factor
             else:
                 att = att / head_dim
+
+            # apply logit softcapping after qk but before masking
+            if self.attn_logit_softcapping is not None:
+                att = att / self.attn_logit_softcapping
+                att = torch.tanh(att)
+                att = att * self.attn_logit_softcapping
 
             # apply masks
             if self.window_size is not None:

@@ -20,6 +20,10 @@ class GPTConfig:
     n_cproj: int = None
     use_concat_heads: bool = False
 
+    # Softcapping params
+    attn_logit_softcapping: bool = False
+    final_logit_softcapping: bool = False
+
     # Learned Position Embeddings
     n_lpe: int = 0
     lpe_block_size: int = 1024
