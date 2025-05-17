@@ -1,6 +1,11 @@
 # train_args.py
 import argparse
 import math
+import re
+
+def clean_dataset_path(dataset_name):
+    """Removes leading './data/' or 'data/' from dataset paths."""
+    return re.sub(r'^(?:\./)?data/', '', dataset_name)
 
 def parse_args():
 
@@ -51,14 +56,29 @@ def parse_args():
     training_group.add_argument('--csv_ckpt_dir', default='', type=str)
     training_group.add_argument('--init_from_ckpt', default='ckpt.pt', type=str, help="if save_major_ckpt_interval was set, can use to init from specific ckpts")
 
+    # Training modes
+    # TODO: find a way to merge this with the multicontext arg
+    training_group.add_argument(
+        '--training_mode',
+        default='single',
+        choices=['single', 'multidataset', 'multicontext'],
+        help="Training mode to use. 'multidataset' uses sequential sampling from multiple datasets. 'multicontext' processes multiple contexts simultaneously."
+    )
+
     # Data args
     training_group.add_argument('--dataset', default='shakespeare_char', type=str)
     training_group.add_argument('--batch_size', default=64, type=int)
     training_group.add_argument("--seed", default=1337, type=int)
 
-    # New: total tokens in dataset (for computing epochs) and sampling method
-    training_group.add_argument('--dataset_size_tokens', default=None, type=int,
-        help="Total number of tokens in the dataset (used for reporting epoch progress)")
+    # Multicontext Training Dataset args
+    model_group.add_argument('--multicontext', default=False, action=argparse.BooleanOptionalAction,
+                                    help="Enable multi-context training on multiple simultaneous datasets")
+    training_group.add_argument('--multicontext_datasets', default=None, nargs='+', type=str,
+                                    help="List of datasets to train on in multi-context mode (e.g., --multicontext_datasets shakespeare wikitext103 openwebtext)")
+    model_group.add_argument('--vocab_sizes', default=None, nargs='+', type=int,
+                                    help="List of vocabulary sizes for each dataset in --multicontext_datasets")
+
+    # Batch sampling args
     training_group.add_argument('--sampling_method', default="random",
         choices=["random", "sequential", "without_replacement"],
         help="Sampling method for get_batch: 'random' (with replacement), 'sequential' (without shuffling), or 'without_replacement' (shuffled without replacement)")
@@ -146,6 +166,7 @@ def parse_args():
     model_group.add_argument('--n_embd', default=384, type=int, help="Size of embeddings in decoder layer and wte unless n_embd_wte is set." )
     model_group.add_argument('--n_embd_wte', default=None, type=int, help="If different from n_embd, an adapter table will be automatically created")
     model_group.add_argument('--n_embd_wte_scale_tying', default=True, action=argparse.BooleanOptionalAction, help="Enable weight tying for scale up and scale down matrices, only has effects if n_embd_wte is not 'None'.")
+    model_group.add_argument('--wte_weight_tying', default=True, action=argparse.BooleanOptionalAction, help="Enable weight tying for non-factorized wte")
     model_group.add_argument('--dropout', default=0.0, type=float)
     model_group.add_argument('--use_post_ln', default=False, action=argparse.BooleanOptionalAction)
     model_group.add_argument('--window_size', default=None, type=int, help="Sliding window size, note this cannot be greater than block size")
@@ -718,6 +739,17 @@ def parse_args():
     if args.save_config_json is not None:
         with open(args.save_config_json, 'w') as json_file:
             json.dump(vars(args), json_file)
+
+    # Apply cleaning to dataset arguments
+    if args.dataset:
+        args.dataset = clean_dataset_path(args.dataset)
+    print(args.dataset)
+    if args.dataset_list:
+        args.dataset_list = [clean_dataset_path(ds) for ds in args.dataset_list]
+    if args.multicontext_datasets:
+        print(args.multicontext_datasets)
+        args.multicontext_datasets = [clean_dataset_path(ds) for ds in args.multicontext_datasets]
+        print(args.multicontext_datasets)
 
     return args, model_group, training_group, logging_group
 

@@ -80,6 +80,13 @@ def parse_args():
     parser.add_argument('--lsv_scaling_factor',  type=float, default=None, help="scaling factor")
     parser.add_argument('--lsv_mixture',  type=float, nargs='+', default=None, help="scaling factor mixture")
 
+    # Multicontext Related
+    parser.add_argument('--multicontext', action=argparse.BooleanOptionalAction, help="multicontext mode inference")
+    parser.add_argument('--multicontext_datasets',  type=str, nargs='+', default=None, help="list of dataset names")
+    parser.add_argument('--multicontext_start', type=str, nargs='+', default=None,
+                        help="List of start strings, one for each context, if using --multicontext. "
+                        "Must match the number/order of --multicontext_datasets.")
+
     parser.add_argument("--eval_only", action=argparse.BooleanOptionalAction, help="Enable evaluation only mode to calculate and print validation loss")
     parser.add_argument("--eval_iters", type=int, default=250, help="iterations for evaluation")
     parser.add_argument("--eval_dataset", type=str, default=None, help="dataset for evaluation")
@@ -722,6 +729,130 @@ def main():
 
     if args.interactive:
         interactive_generation(model, start_ids, args.device, args.max_new_tokens, args.temperature, args.top_k, args.stop_strings, decode, encode)
+    elif args.multicontext:
+        assert args.multicontext_datasets is not None, (
+            "Must specify --multicontext_datasets when using --multicontext"
+        )
+        assert args.multicontext_start is not None, (
+            "Must specify --multicontext_start when using --multicontext"
+        )
+        if len(args.multicontext_datasets) != len(args.multicontext_start):
+            raise ValueError(
+                "Number of --multicontext_datasets must match number of --multicontext_start strings."
+            )
+
+        # Build a separate tokenizer for each dataset
+        token_dict = {}
+        target_dict = {}
+
+        for i, dataset_name in enumerate(args.multicontext_datasets):
+            # 1) Find meta.pkl for this dataset, e.g. data/<dataset_name>/meta.pkl
+            meta_path = os.path.join("data", dataset_name, "meta.pkl")
+            assert os.path.exists(meta_path), f"meta.pkl not found at {meta_path}"
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+
+            stoi = meta['stoi']
+            itos = meta['itos']
+            encode_i = lambda s: [stoi[c] for c in s if c in stoi]
+            decode_i = lambda l: "".join([itos[i] for i in l])
+
+            # 3) Encode the start string for *this* context
+            start_str = args.multicontext_start[i]
+            start_ids = encode_i(start_str)
+            token_tensor = torch.tensor(
+                start_ids,
+                dtype=torch.long,
+                device=args.device
+            )[None, ...]
+
+            # 4) Keep decode function if we want to print each context separately
+            token_dict[f"context_{i}"] = token_tensor
+            # Optionally we could store decode_i if we want to decode separately
+            # e.g. a dictionary of decode functions: decode_dict[f"context_{i}"] = decode_i
+
+        # Now do the same generation loop. We'll do the "one forward pass per time-step" approach
+        block_size = args.block_size if args.block_size else model.config.block_size
+        with torch.no_grad(), ctx:
+            for k in range(args.num_samples):
+                if args.use_lsv:
+                    model.set_lsv_index(k % args.lsv_size)
+                    print("vector", k % args.lsv_size)
+                    if args.lsv_scaling_factor is not None:
+                        model.set_lsv_scaling_factor(args.lsv_scaling_factor)
+                    if args.lsv_mixture is not None:
+                        model.set_lsv_mode(2)
+                        model.set_lsv_mixture(args.lsv_mixture)
+                    else:
+                        model.set_lsv_mode(1)
+
+                # We'll generate args.max_new_tokens total tokens
+                for step in range(args.max_new_tokens):
+                    idx_cond_dict = {}
+                    # 5) Build a cropped version per context
+                    for key, tokens in token_dict.items():
+                        if tokens.size(1) <= block_size:
+                            idx_cond_dict[key] = tokens
+                        else:
+                            idx_cond_dict[key] = tokens[:, -block_size:]
+
+                    # 6) Single forward pass for all contexts
+                    logits_list, _ = model(None, token_dict=idx_cond_dict, target_dict=None)
+
+                    # import pdb; pdb.set_trace()
+                    # 7) For each context, sample next token
+                    key_list = list(idx_cond_dict.keys())
+                    for i, key in enumerate(key_list):
+                        cur_logits = logits_list[i][:, -1, :] / args.temperature
+                        # ── top-k truncation ───────────────────────────────
+                        # argparse uses `nargs='+'`, so --top_k may arrive as
+                        # an *int* or as a *list* (even when only one value is
+                        # supplied).  Convert to a plain int before `min()`.
+                        if args.top_k is not None:
+                            top_k_val = args.top_k[0] if isinstance(
+                                args.top_k, (list, tuple)
+                            ) else args.top_k
+
+                            k = min(top_k_val, cur_logits.size(-1))
+                            v, _ = torch.topk(cur_logits, k)
+                            cur_logits[cur_logits < v[:, [-1]]] = -float("inf")
+
+                        probs = F.softmax(cur_logits, dim=-1)
+                        idx_next = torch.multinomial(probs, num_samples=1)
+                        token_dict[key] = torch.cat((token_dict[key], idx_next), dim=1)
+
+                # 8) After generation, decode each context
+                output_dict = {}
+                # Re-load the meta & decode for each context to show final text
+                for i, dataset_name in enumerate(args.multicontext_datasets):
+                    meta_path = os.path.join("data", dataset_name, "meta.pkl")
+                    with open(meta_path, "rb") as f:
+                        meta = pickle.load(f)
+                    if 'tokenizer' in meta and meta['tokenizer'] == 'tiktoken':
+                        import tiktoken
+                        enc_obj = tiktoken.get_encoding(meta['tiktoken_encoding'])
+                        decode_i = lambda l: enc_obj.decode(l)
+                    else:
+                        # or custom fallback
+                        stoi = meta['stoi']
+                        itos = meta['itos']
+                        decode_i = lambda l: "".join([itos[ix] for ix in l if ix in itos])
+
+                    key = f"context_{i}"
+                    tokens_i = token_dict[key][0].tolist()
+                    output_dict[key] = decode_i(tokens_i)
+
+                # 9) Print
+                for key, text in output_dict.items():
+                    key_color="bold light_slate_blue"
+                    text_color="bold cyan"
+                    print(f"\n[{key_color}]{key}:[/{key_color}]\n[{text_color}]{text}[/{text_color}]")
+                print("---------------")
+
+                if args.sample_file:
+                    with open(args.sample_file, "w") as file:
+                        for key, text in output_dict.items():
+                            file.write(f"\n{key}: \n{text}\n")
     else:
         sample_with_existing_model(
                 model,

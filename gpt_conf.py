@@ -14,6 +14,10 @@ class GPTConfig:
     n_kv_group: int = 12
     n_embd: int = 768
 
+    # For multicontext training
+    multicontext: bool = False
+    vocab_sizes: List[int] = field(default_factory=lambda: []) # Used in place of vocab
+
     ## Inf attention variation
     n_qk_head_dim: int = None
     n_v_head_dim: int = None
@@ -72,6 +76,7 @@ class GPTConfig:
 
     # weight tying
     n_embd_wte_scale_tying: bool = True
+    wte_weight_tying: bool = True # Non-factorized wte weight tying
 
     # wte import/export
     import_wte_freeze: bool = False
