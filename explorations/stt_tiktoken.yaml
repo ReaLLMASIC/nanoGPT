@@ -1,0 +1,26 @@
+# stt_tiktoken.yaml
+---
+# parameter_groups: define sets of overrides to apply on top of base params
+parameter_groups:
+  - use_rotary_embeddings: [true]
+    use_abs_pos_embeddings: [false]
+
+# base hyperparameters
+max_iters: [10000]
+n_layer: [6]
+n_head: [6]
+n_embd: [384]
+block_size: [1024]
+device: ["cuda"]
+dtype: ["float16"]
+dataset: ["snac_cvja"]
+
+# boolean flags
+compile: [true]
+
+# tensorboard run name
+tensorboard_run_name: ["stt_tiktoken"]
+sample_each_eval: [true]
+max_sample_tokens: [800]
+colorize_output: [true]
+colorization_mode: ["all"]

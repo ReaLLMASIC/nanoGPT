@@ -267,7 +267,7 @@ def parse_args():
     training_group.add_argument('--token_boundary', type=str, default=None, help="Optional separator string between emitted tokens (for decode).")
     training_group.add_argument('--num_samples', type=int, default=1, help="Number of generated samples during sampling.")
     training_group.add_argument('--temperature', type=float, default=0.8, help="Temperature for predictions (1.0 = normal, < 1.0 = less random).")
-    training_group.add_argument('--top_k', type=int, nargs='+', default=[2, 5, 10, 20], help="Retain only the top_k most likely tokens (used in sample.py).")
+    training_group.add_argument('--top_k', type=int, nargs='+', default=[1, 2, 5, 10], help="Retain only the top_k most likely tokens (used in sample.py).")
     training_group.add_argument('--eval_dataset', type=str, default=None, help="Optional dataset name for custom evaluation splits.")
     training_group.add_argument('--quantization_data_file', type=str, default=None, help="If set, export quantized weights/activations to a specified file (pkl).")
 

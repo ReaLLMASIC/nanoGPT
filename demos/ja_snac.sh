@@ -12,7 +12,7 @@ bash get_dataset.sh
 popd
 
 # running the training
-python3 optimization_and_search/run_experiments.py --config explorations/stt.yaml --config_format yaml --output_dir snac_ipa_ja_outs
+python3 optimization_and_search/run_experiments.py --config explorations/stt_ipabytefallback.yaml --config_format yaml --output_dir snac_ipa_bf_ja_outs
 
 # Doing the tiktoken tokenizer
 pushd "data/snac_cvja"
@@ -20,4 +20,4 @@ python3 prepare.py -t ja_snac_text.txt --method tiktoken
 popd
 
 # running the training
-python3 optimization_and_search/run_experiments.py --config explorations/stt.yaml --config_format yaml --output_dir snac_text_ja_outs
+python3 optimization_and_search/run_experiments.py --config explorations/stt_tiktoken.yaml --config_format yaml --output_dir snac_tiktoken_ja_outs
