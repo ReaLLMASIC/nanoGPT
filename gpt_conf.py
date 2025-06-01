@@ -150,9 +150,11 @@ class GPTConfig:
     # MLP
     shared_mlp_size: int = 1
     shared_mlp_sym: bool = False
+    shared_mlp_seq: int = 1
     # ATTN
     shared_attn_size: int = 1
     shared_attn_sym: bool = False
+    shared_attn_seq: int = 1
 
     # Softmax Alternatives and Options
     softmax_variant_attn: str = "softmax" # Choices: "softmax" "softermax" "sigsoftmax" "polymax" "strongermax" "consmax"

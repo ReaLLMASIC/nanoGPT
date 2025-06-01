@@ -387,8 +387,10 @@ def parse_args():
     # Shared Parameter Settings
     model_group.add_argument('--shared_mlp_size', default=1, type=int, help="every 'k' contiguous blocks of mlp are shared")
     model_group.add_argument('--shared_mlp_sym', default=False, action=argparse.BooleanOptionalAction)
+    model_group.add_argument('--shared_mlp_seq', default=1, type=int, help="Sequence length for cyclic sharing of MLP layers")
     model_group.add_argument('--shared_attn_size', default=1, type=int, help="every 'k' contiguous blocks of attn are shared")
     model_group.add_argument('--shared_attn_sym', default=False, action=argparse.BooleanOptionalAction, help="symmetrical attention sharing")
+    model_group.add_argument('--shared_attn_seq', default=1, type=int, help="Sequence length for cyclic sharing of attention layers")
 
     # NORM VARIATIONS
     norm_variations = [

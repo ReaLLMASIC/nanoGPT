@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to the configuration file."
     )
     parser.add_argument(
-        '--config_format', choices=['json', 'yaml'], default='json',
+        '--config_format', choices=['json', 'yaml'], default='yaml',
         help="Configuration file format (json or yaml)."
     )
     parser.add_argument(
