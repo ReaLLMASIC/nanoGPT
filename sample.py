@@ -197,29 +197,62 @@ def colorize_text(tokens, raw_logits, decode, colorize_mode='minmax'):
     return text
 
 def save_chart(probs, idx, decode, step, out_dir, last_k_tokens, chart_type, selected_token):
-    top_k_probs, top_k_indices = torch.topk(probs, k=probs.size(-1))
-    top_k_tokens = [decode([top_k_indices[0, i].item()]) for i in range(top_k_indices.size(1))]
+    """
+    Generates and saves a chart (heatmap or barchart) of token probabilities for a single generation step.
+    This corrected version plots only the top-k most probable tokens to ensure readability.
+    """
+    # Define a reasonable number of top tokens to display in the chart.
+    k_to_plot = 40
 
-    plt.figure(figsize=(10, 6))
+    # Get the top k probabilities and indices from the probability distribution.
+    # `probs` has shape (1, vocab_size), so we flatten it.
+    top_probs, top_indices = torch.topk(probs.flatten(), k=k_to_plot)
+
+    # Decode the token indices to get their string representation.
+    top_tokens = [decode([i.item()]) for i in top_indices]
+
+    # Create the plot with a larger figure size for readability.
+    plt.figure(figsize=(16, 9))
 
     if chart_type == 'heatmap':
-        sns.heatmap(top_k_probs.cpu().numpy().reshape(1, -1), annot=np.array(top_k_tokens).reshape(1, -1), fmt='', cmap='viridis')
+        # For a heatmap, show the top k_to_plot tokens and their probabilities.
+        annot_data = np.array(top_tokens).reshape(1, -1)
+        sns.heatmap(top_probs.cpu().numpy().reshape(1, -1), annot=annot_data, fmt='', cmap='viridis', cbar_kws={'label': 'Probability'})
+        plt.yticks([]) # Hide y-axis ticks as they are not meaningful here.
+        plt.title(f"Step {step}: Top-{k_to_plot} Token Probabilities (Heatmap)")
+
     elif chart_type == 'barchart':
-        colors = sns.color_palette('viridis', len(top_k_tokens))
-        bars = plt.bar(top_k_tokens, top_k_probs.cpu().numpy().flatten(), color=colors)
-        plt.xticks(rotation=90)
-        for bar, token in zip(bars, top_k_tokens):
-            if token == selected_token:
-                bar.set_edgecolor('red')
-                bar.set_linewidth(2)
+        # For a barchart (histogram), plot the probabilities for the top tokens.
+        colors = sns.color_palette('viridis', n_colors=k_to_plot)
+        bars = plt.bar(top_tokens, top_probs.cpu().numpy(), color=colors)
+        plt.ylabel("Probability")
+        plt.xticks(rotation=45, ha="right") # Rotate labels to prevent overlap.
 
-    plt.title(f"Step {step}: Top-k Token Probabilities")
-    last_tokens = decode(idx[0, -last_k_tokens:].tolist())
-    plt.xlabel(f"Last {last_k_tokens} Tokens: {last_tokens}")
+        # Highlight the bar for the token that was actually selected.
+        try:
+            # Find the selected token within the top-k list.
+            selected_token_index = top_tokens.index(selected_token)
+            bars[selected_token_index].set_edgecolor('red')
+            bars[selected_token_index].set_linewidth(2)
+        except ValueError:
+            # This can happen if the selected token is not in the top k_to_plot,
+            # especially with high temperature or if k used for sampling is > k_to_plot.
+            print(f"Note: Selected token '{selected_token}' not in top {k_to_plot} for visualization at step {step}.")
+        plt.title(f"Step {step}: Top-{k_to_plot} Token Probabilities (Bar Chart)")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(out_dir, f"{timestamp}_step{step}.png")
-    os.makedirs(out_dir, exist_ok=True)
+    # Add a more descriptive x-axis label.
+    last_tokens_decoded = decode(idx[0, -last_k_tokens:].tolist())
+    plt.xlabel(f"Top Token Candidates (Context: ...{last_tokens_decoded})")
+
+    # Save the figure to a dedicated 'charts' subdirectory.
+    charts_dir = os.path.join(out_dir, 'charts')
+    os.makedirs(charts_dir, exist_ok=True)
+
+    # Use a high-resolution timestamp to prevent filename collisions.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    out_path = os.path.join(charts_dir, f"step_{step}_{timestamp}.png")
+
+    plt.tight_layout() # Adjust layout to prevent labels from being cut off.
     plt.savefig(out_path)
     plt.close()
 

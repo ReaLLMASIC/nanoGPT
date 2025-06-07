@@ -8,6 +8,8 @@ popd
 python train.py \
   --dataset filipino/tagalog_filipino_eng_translation \
   --compile \
+  --colorize_output \
+  --colorize_mode all \
   --max_iters 10000
 
 python colorize_dataset.py \
@@ -17,5 +19,5 @@ python colorize_dataset.py \
   --num_tokens     2048 \
   --device         cuda:0 \
   --block_size     256 \
-  --mode           minmax \
-  --output_file    kulay_na_dataset.txt
+  --mode           minmax  \
+  --output_file    kulay_ng_dataset_minmax.txt
