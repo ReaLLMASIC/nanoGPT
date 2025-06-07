@@ -20,12 +20,9 @@ parameter_groups:
     mlp_up_bias: [true, false]
     mlp_down_bias: [true, false]
 
-# base hyperparameters (defaults)
-block_size: [512]
-n_layer: [12]
-n_head: [12]
-n_embd: [768]
-bias: [false]
+# Position embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
 
 # training configuration
 dataset: "minipile"

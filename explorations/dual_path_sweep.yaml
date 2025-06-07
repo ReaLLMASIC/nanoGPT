@@ -2,14 +2,21 @@
 ---
 # parameter_groups: define sets of overrides to apply on top of base params
 parameter_groups:
+  - mlp_variant: ["mlp"]
+    mlp_size: ["2304"]
+  - mlp_variant: ["swiglu"]
   - mlp_variant: ["dual_path"]
-    dual_path_x_offset: [0.01, 0.1, 1.0]
-    dual_path_y_offset: [-0.1, 0.0, 0.1]
+    dual_path_x_offset: [0.01, 0.05, 0.1, 1.0]
+    dual_path_y_offset: [-0.01, 0.0, 0.01]
     learn_dual_path_x_offset: [true, false]
     learn_dual_path_y_offset: [true, false]
 
 # MLP specific parameters
-activation_variant: ["relu", "gelu", "softplus"]
+activation_variant: ["relu", "gelu", "softplus", "identity"]
+
+# Position embeddings
+use_rotary_embeddings: [true]
+use_abs_pos_embeddings: [false]
 
 # training configuration
 dataset: "minipile"
