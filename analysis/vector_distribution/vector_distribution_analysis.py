@@ -51,13 +51,9 @@ def get_values(num_format, exp_bits=None, mant_bits=None):
     if num_format == "int8":
         return np.arange(-128, 128, dtype=np.float64)
     if num_format == "e4m3":
-        exp_bits = exp_bits or 4
-        mant_bits = mant_bits or 3
-        return float_subset_values(exp_bits, mant_bits)
+        return float_subset_values(4, 3)
     if num_format == "e5m2":
-        exp_bits = exp_bits or 5
-        mant_bits = mant_bits or 2
-        return float_subset_values(exp_bits, mant_bits)
+        return float_subset_values(5, 2)
     if num_format == "fp16":
         exp_bits = exp_bits or 5
         mant_bits = mant_bits or 10
@@ -65,22 +61,30 @@ def get_values(num_format, exp_bits=None, mant_bits=None):
     raise ValueError(f"unsupported format {num_format}")
 
 
-def generate_vectors(values, mode, num_samples=None, mean=0.0, stddev=0.02):
+def generate_vectors(values, mode, num_samples=None, mean=0.0, stddev=0.02, min_clip=None, max_clip=None, normalize=True):
     """Generate 3D vectors according to the specified mode."""
     rnd = np.random.default_rng(0)
     if mode == "exhaustive":
         for combo in product(values, repeat=3):
             vec = np.array(combo, dtype=np.float64)
             norm = np.linalg.norm(vec)
+            if min_clip is not None and norm < min_clip:
+                continue
+            if max_clip is not None and norm > max_clip:
+                continue
             if norm > 0:
-                yield vec / norm
+                yield vec / norm if normalize else vec
     elif mode == "random":
         assert num_samples is not None
         for _ in range(num_samples):
             vec = rnd.choice(values, size=3)
             norm = np.linalg.norm(vec)
+            if min_clip is not None and norm < min_clip:
+                continue
+            if max_clip is not None and norm > max_clip:
+                continue
             if norm > 0:
-                yield vec / norm
+                yield vec / norm if normalize else vec
     elif mode == "gaussian":
         assert num_samples is not None
         cont = rnd.normal(loc=mean, scale=stddev, size=(num_samples, 3))
@@ -88,8 +92,12 @@ def generate_vectors(values, mode, num_samples=None, mean=0.0, stddev=0.02):
             quantized = np.array([values[np.abs(values - c).argmin()] for c in row],
                                 dtype=np.float64)
             norm = np.linalg.norm(quantized)
+            if min_clip is not None and norm < min_clip:
+                continue
+            if max_clip is not None and norm > max_clip:
+                continue
             if norm > 0:
-                yield quantized / norm
+                yield quantized / norm if normalize else quantized
     else:
         raise ValueError(f"unsupported mode {mode}")
 
@@ -119,21 +127,60 @@ def bin_vectors(vectors, bins, projection="equal-area"):
 
 def bin_vectors_healpix(vectors, nside):
     """Bin vectors directly into HEALPix pixels based on their direction."""
-    theta = []
-    phi = []
-    for v in vectors:
-        x, y, z = v
-        r = np.linalg.norm(v)
-        if r == 0:
-            continue
-        t = np.arccos(z / r)
-        p = np.arctan2(y, x) % (2 * np.pi)
-        theta.append(t)
-        phi.append(p)
+    if not isinstance(vectors, np.ndarray):
+        vectors = np.array(vectors)
+    
+    if vectors.ndim == 1:
+        vectors = vectors.reshape(1, -1)
+
+    if vectors.shape[0] == 0:
+        return np.zeros(hp.nside2npix(nside), dtype=int)
+
+    norms = np.linalg.norm(vectors, axis=1)
+    valid_indices = norms > 0
+    
+    theta = np.arccos(vectors[valid_indices, 2] / norms[valid_indices])
+    phi = np.arctan2(vectors[valid_indices, 1], vectors[valid_indices, 0]) % (2 * np.pi)
 
     pix = hp.ang2pix(nside, theta, phi)
     hist = np.bincount(pix, minlength=hp.nside2npix(nside))
     return hist
+
+def bin_vectors_by_norm_healpix(vectors, nside, num_norm_bins):
+    """Bin vectors into multiple HEALPix histograms based on their norm."""
+    if not vectors:
+        return [], np.array([])
+
+    vectors = np.array(vectors)
+    norms = np.linalg.norm(vectors, axis=1)
+    min_norm, max_norm = norms.min(), norms.max()
+
+    if np.isclose(min_norm, max_norm):
+        bin_edges = np.array([min_norm, max_norm + 1e-9])
+        num_norm_bins = 1
+    else:
+        bin_edges = np.linspace(min_norm, max_norm, num_norm_bins + 1)
+
+    histograms = []
+    for i in range(num_norm_bins):
+        lower_bound = bin_edges[i]
+        upper_bound = bin_edges[i+1]
+        
+        # Handle last bin inclusiveness
+        if i == num_norm_bins - 1:
+            indices = np.where((norms >= lower_bound) & (norms <= upper_bound))[0]
+        else:
+            indices = np.where((norms >= lower_bound) & (norms < upper_bound))[0]
+        
+        if len(indices) > 0:
+            bin_vectors = vectors[indices]
+            hist = bin_vectors_healpix(bin_vectors, nside)
+            histograms.append(hist)
+        else:
+            histograms.append(np.zeros(hp.nside2npix(nside), dtype=int))
+            
+    return histograms, bin_edges
+
 
 def generate_mesh_from_healpix(nside):
     """Generate a triangle mesh from HEALPix pixel boundaries."""
@@ -173,34 +220,77 @@ def add_xyz_axes(fig, length=1.2):
             showlegend=False
         ))
 
-def plot_healpix_distribution(hist, nside, out_html="healpix_output.html", title="Quantized Vector Density on Sphere"):
+def plot_healpix_distribution(hist, nside, out_html="healpix_output.html", title="Quantized Vector Density on Sphere", flatten=False, norm_bin_edges=None):
     from plotly.io import write_html
 
     verts, faces = generate_mesh_from_healpix(nside)
-
-    expanded_hist = np.repeat(hist, 4)  # 4 vertices per pixel
-    norm = (expanded_hist - expanded_hist.min()) / (expanded_hist.max() - expanded_hist.min() + 1e-10)
-
     x, y, z = verts.T
     i, j, k = faces.T
 
-    fig = go.Figure(data=[
-        go.Mesh3d(
-            x=x, y=y, z=z,
-            i=i, j=j, k=k,
-            intensity=norm,
-            colorscale='Hot',
-            opacity=1.0,
-            lighting=dict(ambient=0.6, diffuse=0.9),
-            flatshading=True,
-            hoverinfo='skip',
-            showscale=True
+    fig = go.Figure()
+
+    is_binned = isinstance(hist, list)
+    histograms = hist if is_binned else [hist]
+
+    for idx, h in enumerate(histograms):
+        if flatten:
+            intensity_values = (h > 0).astype(float)
+            colorscale = [[0, 'rgb(255,255,255)'], [1, 'rgb(255,0,0)']]
+            showscale = False
+        else:
+            min_val, max_val = h.min(), h.max()
+            if max_val > min_val:
+                intensity_values = (h - min_val) / (max_val - min_val)
+            else:
+                intensity_values = np.zeros_like(h, dtype=float)
+            colorscale = 'Hot'
+            showscale = True
+
+        expanded_intensity = np.repeat(intensity_values, 4)
+
+        fig.add_trace(
+            go.Mesh3d(
+                x=x, y=y, z=z,
+                i=i, j=j, k=k,
+                intensity=expanded_intensity,
+                colorscale=colorscale,
+                opacity=1.0,
+                lighting=dict(ambient=0.6, diffuse=0.9),
+                flatshading=True,
+                hoverinfo='skip',
+                showscale=showscale,
+                visible=(idx == 0)
+            )
         )
-    ])
+
+    if is_binned and norm_bin_edges is not None and len(histograms) > 1:
+        steps = []
+        for i in range(len(histograms)):
+            bin_label = f"{norm_bin_edges[i]:.3g} - {norm_bin_edges[i+1]:.3g}"
+            step = dict(
+                method="update",
+                args=[{"visible": [False] * len(histograms)},
+                      {"title": f"{title}<br>Norm bin: {bin_label}"}],
+                label=bin_label
+            )
+            step["args"][0]["visible"][i] = True
+            steps.append(step)
+
+        sliders = [dict(
+            active=0,
+            currentvalue={"prefix": "Norm Range: "},
+            pad={"t": 50},
+            steps=steps
+        )]
+        fig.update_layout(sliders=sliders)
+        initial_title = f"{title}<br>Norm bin: {norm_bin_edges[0]:.3g} - {norm_bin_edges[1]:.3g}"
+    else:
+        initial_title = title
+
     add_xyz_axes(fig)
 
     fig.update_layout(
-        title=title,
+        title=initial_title,
         scene=dict(
             xaxis=dict(visible=False),
             yaxis=dict(visible=False),
@@ -210,6 +300,7 @@ def plot_healpix_distribution(hist, nside, out_html="healpix_output.html", title
     )
     write_html(fig, out_html)
     print(f"Saved HEALPix-based 3D plot to {out_html}")
+
 
 def plot_heatmap(H, t_edges, p_edges, out_path, projection="equal-area", log_scale=False):
     plt.figure(figsize=(8, 4))
@@ -270,6 +361,46 @@ def plot_heatmap_3d(H, t_edges, p_edges, out_path, projection="equal-area", log_
         plt.savefig(out_path)
 
 
+def plot_scatter_3d(vectors, out_html, title="3D Scatter Plot of Vectors"):
+    """Generate an interactive 3D scatter plot of vectors."""
+    from plotly.io import write_html
+
+    if not isinstance(vectors, np.ndarray):
+        vectors = np.array(vectors)
+    
+    if vectors.ndim == 1:
+        vectors = vectors.reshape(1, -1)
+
+    if vectors.shape[0] == 0:
+        print("No vectors to plot.")
+        return
+
+    x, y, z = vectors.T
+
+    fig = go.Figure(data=[go.Scatter3d(
+        x=x, y=y, z=z,
+        mode='markers',
+        marker=dict(
+            size=2,
+            opacity=0.6,
+        )
+    )])
+
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z',
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=40)
+    )
+    
+    write_html(fig, out_html)
+    print(f"Saved 3D scatter plot to {out_html}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Vector distribution analysis")
     parser.add_argument('--format', choices=['int3', 'int4', 'int5', 'int6', 'int7', 'int8', 'e4m3', 'e5m2', 'fp16'], required=True)
@@ -292,27 +423,79 @@ if __name__ == "__main__":
     parser.add_argument('--out3d', default=None,
                         help='optional 3D heatmap output path. Use a .html '
                              'extension for an interactive figure')
+    parser.add_argument('--points_3d', action='store_true',
+                        help='Plot vectors as 3D points instead of a spherical projection.')
+    parser.add_argument('--points_3d_normalize', action=argparse.BooleanOptionalAction, default=False,
+                        help='Used with --points_3d. If passed, normalizes vectors before plotting.')
     parser.add_argument('--projection', choices=['equal-area', 'angular'],
                         default='equal-area',
                         help='heatmap projection / tiling scheme')
     parser.add_argument('--log', action='store_true', help='use log scale for heatmap')
+    
+    # New arguments
+    parser.add_argument('--flatten', action='store_true',
+                        help='For HEALPix, show a binary map where any pixel with >=1 vector is colored.')
+    parser.add_argument('--min_clip', type=float, default=None,
+                        help='Clip vectors with a norm below this value.')
+    parser.add_argument('--max_clip', type=float, default=None,
+                        help='Clip vectors with a norm above this value.')
+    parser.add_argument('--num_norm_bins', type=int, default=None,
+                        help='Number of bins for vector norms. Activates norm-based analysis for HEALPix.')
+
     args = parser.parse_args()
 
     values = get_values(args.format, exp_bits=args.exp_bits, mant_bits=args.mant_bits)
-    if args.mode == 'exhaustive':
-        vectors = list(generate_vectors(values, 'exhaustive'))
-    elif args.mode == 'random':
-        vectors = list(generate_vectors(values, 'random', num_samples=args.num))
-    else:  # gaussian
-        vectors = list(generate_vectors(values, 'gaussian', num_samples=args.num,
-                                        mean=args.mean, stddev=args.std))
-    if args.healpix:
-        hist = bin_vectors_healpix(vectors, args.nside)
-        plot_healpix_distribution(hist, args.nside, out_html=args.out3d or "healpix_output.html")
+    
+    if args.points_3d:
+        normalize_vectors = args.points_3d_normalize
     else:
+        # Do not normalize vectors if we are binning by norm
+        normalize_vectors = not (args.num_norm_bins and args.healpix)
+
+    vector_generator = generate_vectors(
+        values,
+        args.mode,
+        num_samples=args.num,
+        mean=args.mean,
+        stddev=args.std,
+        min_clip=args.min_clip,
+        max_clip=args.max_clip,
+        normalize=normalize_vectors
+    )
+    vectors = list(vector_generator)
+
+    if args.points_3d:
+        # The user wants a 3D scatter plot. This is the primary output.
+        outfile = args.out3d or f"points_3d_{args.format}.html"
+        plot_scatter_3d(vectors, outfile, title=f"3D Point Distribution for {args.format}")
+    elif args.healpix:
+        # The user wants a HEALPix plot.
+        if args.num_norm_bins:
+            histograms, norm_bin_edges = bin_vectors_by_norm_healpix(vectors, args.nside, args.num_norm_bins)
+            plot_healpix_distribution(
+                histograms,
+                args.nside,
+                out_html=args.out3d or "healpix_norm_binned.html",
+                flatten=args.flatten,
+                norm_bin_edges=norm_bin_edges,
+                title=f"Vector Density (Norm-Binned) for {args.format}"
+            )
+        else:
+            hist = bin_vectors_healpix(vectors, args.nside)
+            plot_healpix_distribution(
+                hist,
+                args.nside,
+                out_html=args.out3d or "healpix_output.html",
+                flatten=args.flatten,
+                title=f"Vector Density for {args.format}"
+            )
+    else:
+        # Default case: 2D heatmap.
         H, t_edges, p_edges = bin_vectors(vectors, bins=args.bins, projection=args.projection)
         plot_heatmap(H, t_edges, p_edges, args.out, projection=args.projection, log_scale=args.log)
         print(f"Saved heatmap to {args.out}")
+
+        # And an optional 3D heatmap plot.
         if args.out3d:
             plot_heatmap_3d(H, t_edges, p_edges, args.out3d, projection=args.projection, log_scale=args.log)
             print(f"Saved 3D heatmap to {args.out3d}")
