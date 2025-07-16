@@ -46,12 +46,21 @@ wget --header="Authorization: Bearer ${HF_TOKEN}" -nc -O "final.json" "${url}/re
 echo "snac conversion files downloaded and saved to ${out_dir}."
 popd
 
+# Filtering out outliers in dataset
+for jsonfile in "$out_dir"/*.json; do
+    # Check if the .tsv file exists (handles the case where no .tsv files are present)
+    if [ -f "$jsonfile" ]; then
+        echo "Processing $jsonfile..."
+        python3 "$script_dir"/utils/filter_json_stt.py "$jsonfile" "spaced_ipa" "$jsonfile"
+    fi
+done
+
 output_snac_txt="ja_snac_text.txt"
-python3 "$script_dir"/utils/extract_json_snactext.py "$out_dir" "text" "$output_snac_txt" --directory
+python3 "$script_dir"/utils/extract_json_snactext.py "$out_dir" -t "sentence" "$output_snac_txt" --directory
 echo "snac-text extraction finished."
 
 output_snac_ipa="ja_snac_ipa.txt"
-python3 "$script_dir"/utils/extract_json_snactext.py "$out_dir" "ipa" "$output_snac_ipa" --directory
+python3 "$script_dir"/utils/extract_json_snactext.py "$out_dir" "spaced_ipa" "$output_snac_ipa" --directory
 echo "snac-ipa extraction finished."
 
 # Tokenization step to create train.bin and val.bin files.
