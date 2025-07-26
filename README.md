@@ -223,3 +223,6 @@ to add new features and explorations.
 - NanoGPT Discord Channel [![](https://dcbadge.vercel.app/api/server/3zy8kqD9Cp?compact=true&style=flat)](https://discord.gg/3zy8kqD9Cp)
 - [Zero To Hero series](https://karpathy.ai/zero-to-hero.html)
 - [GPT video](https://www.youtube.com/watch?v=kCc8FmEb1nY)
+
+![Alt](https://repobeats.axiom.co/api/embed/c372c58e1f19f91b5e4223627f2bd9c8a702d390.svg "Repobeats analytics image")
+

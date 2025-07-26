@@ -1,7 +1,17 @@
 # utils/model_stats.py
 import torch
 from torch import Tensor
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List, Optional
+from rich.table import Table
+from rich.console import Console
+import math
+
+_console = Console()
+
+
+def _valid_float(val: Optional[float]) -> bool:
+    """Return True if ``val`` is a finite float."""
+    return isinstance(val, float) and math.isfinite(val)
 
 def _moments(t: Tensor) -> Dict[str, float]:
     """
@@ -33,8 +43,9 @@ def _moments(t: Tensor) -> Dict[str, float]:
 @torch.no_grad()
 def compute_weight_stats(model: torch.nn.Module, device: torch.device) -> Tuple[Dict[str, Dict], Dict[str, float]]:
     per_tensor: Dict[str, Dict] = {}
-    accum      = {k:0.0 for k in ["stdev","kurtosis","max","min","abs_max"]}
-    n          = 0
+    keys = ["stdev", "kurtosis", "max", "min", "abs_max"]
+    accum  = {k: 0.0 for k in keys}
+    counts = {k: 0 for k in keys}
 
     for name, p in model.named_parameters():
         if p.requires_grad:                       # skip buffers etc.
@@ -42,10 +53,13 @@ def compute_weight_stats(model: torch.nn.Module, device: torch.device) -> Tuple[
             s = _moments(t)
             per_tensor[name] = s
             for k in accum:                       # running mean over tensors
-                accum[k] += s[k]
-            n += 1
+                val = s[k]
+                if not _valid_float(val):
+                    continue
+                accum[k] += val
+                counts[k] += 1
 
-    overall = {k: v/n for k,v in accum.items()}
+    overall = {k: (accum[k] / counts[k]) if counts[k] > 0 else float("nan") for k in accum}
     return per_tensor, overall
 
 @torch.no_grad()
@@ -64,21 +78,24 @@ def compute_activation_stats(
     Returns a dict keyed by module‑path and an overall average.
     """
     act_stats: Dict[str, Dict] = {}
-    overall   = {k: 0.0 for k in ["stdev", "kurtosis", "max", "min", "abs_max"]}
-    n         = 0
+    keys = ["stdev", "kurtosis", "max", "min", "abs_max"]
+    sums   = {k: 0.0 for k in keys}
+    counts = {k: 0 for k in keys}
 
     def make_hook(mod_name: str):
         def _hook(_module, _inp, out):
-            nonlocal n
             # Work with first tensor output if module returns tuple
             t = out[0] if isinstance(out, (tuple, list)) else out
             if not torch.is_tensor(t):
                 return                          # skip non‑tensor outputs
             s = _moments(t.detach().to(device))
             act_stats[mod_name] = s
-            for k in overall:
-                overall[k] += s[k]
-            n += 1
+            for k in sums:
+                val = s[k]
+                if not _valid_float(val):
+                    continue
+                sums[k] += val
+                counts[k] += 1
             # free ASAP
             del t
         return _hook
@@ -96,9 +113,105 @@ def compute_activation_stats(
     for h in handles:
         h.remove()
 
-    # Guard against empty hook collection
-    if n == 0:
-        return {}, {k: 0.0 for k in overall}
+    # Guard against empty hook collection or no valid stats
+    if all(c == 0 for c in counts.values()):
+        return act_stats, {k: float("nan") for k in sums}
 
-    overall = {k: v / n for k, v in overall.items()}
+    overall = {k: (sums[k] / counts[k]) if counts[k] > 0 else float("nan") for k in sums}
     return act_stats, overall
+
+
+def print_model_stats_table(weight_stats: Dict[str, Dict], act_stats: Dict[str, Dict]) -> None:
+    """Pretty print weight and activation stats side by side using rich.Table."""
+    stat_keys = ["stdev", "kurtosis", "max", "min", "abs_max"]
+
+    # --- Compute column extremes for colouring
+    w_extremes: Dict[str, Tuple[float, float]] = {}
+    a_extremes: Dict[str, Tuple[float, float]] = {}
+
+    def collect_extremes(stats: Dict[str, Dict]) -> Dict[str, Tuple[float, float]]:
+        ext: Dict[str, Tuple[float, float]] = {}
+        for key in stat_keys:
+            vals: List[float] = []
+            for d in stats.values():
+                v = d.get(key)
+                if not _valid_float(v):
+                    continue
+                if key in {"stdev", "max", "abs_max"}:
+                    vals.append(abs(v))
+                else:
+                    vals.append(v)
+            if not vals:
+                ext[key] = (0.0, 0.0)
+            else:
+                ext[key] = (min(vals), max(vals))
+        return ext
+
+    w_extremes = collect_extremes(weight_stats)
+    a_extremes = collect_extremes(act_stats)
+
+    # --- helper for colouring values
+    def colour(val: Optional[float], key: str, col_ext: Dict[str, Tuple[float, float]]) -> str:
+        if not _valid_float(val):
+            return "[orange3]nan[/]"
+
+        lo, hi = col_ext[key]
+
+        if hi == lo:
+            t = 0.5
+        else:
+            if key == "min":
+                # largest value should be green, smallest most red
+                t = (hi - val) / (hi - lo)
+            elif key == "kurtosis":
+                # negative -> green, positive -> red. Use log scaling for
+                # smoother gradation over wide ranges.
+                abs_max = max(abs(lo), abs(hi))
+                if abs_max == 0:
+                    t = 0.5
+                else:
+                    norm = math.log(1 + abs(val)) / math.log(1 + abs_max)
+                    if val >= 0:
+                        t = 0.5 + 0.5 * norm
+                    else:
+                        t = 0.5 - 0.5 * norm
+            else:
+                base = abs(val)
+                t = (base - lo) / (hi - lo)
+
+            t = max(0.0, min(1.0, t))
+
+        r = int(255 * t)
+        g = int(255 * (1 - t))
+        color = f"#{r:02x}{g:02x}00"
+        return f"[{color}]{val:.6f}[/]"
+
+    table = Table(title="Model Statistics", header_style="bold magenta")
+    table.add_column("Tensor", no_wrap=True)
+    for key in stat_keys:
+        table.add_column(f"W {key}", justify="right")
+        table.add_column(f"A {key}", justify="right")
+
+    printed = set()
+    for w_name, ws in weight_stats.items():
+        module = w_name.rsplit(".", 1)[0]
+        as_ = act_stats.get(module)
+        row = [w_name]
+        for key in stat_keys:
+            row.append(colour(ws.get(key), key, w_extremes))
+            row.append(colour(as_.get(key), key, a_extremes) if as_ else colour(None, key, a_extremes))
+        table.add_row(*row)
+        printed.add(module)
+
+    for mod, as_ in act_stats.items():
+        if mod in printed:
+            continue
+        row = [mod]
+        for key in stat_keys:
+            row.append(colour(None, key, w_extremes))
+            row.append(colour(as_.get(key), key, a_extremes))
+        table.add_row(*row)
+
+    _console.print(table)
+
+

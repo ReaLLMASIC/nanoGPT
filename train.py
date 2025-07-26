@@ -38,7 +38,11 @@ from utils.statistic_plots import (
     create_statistics,
 )
 
-from utils.model_stats import compute_weight_stats, compute_activation_stats
+from utils.model_stats import (
+    compute_weight_stats,
+    compute_activation_stats,
+    print_model_stats_table,
+)
 
 from sample import (
     sample_with_existing_model,
@@ -902,18 +906,7 @@ class Trainer:
             self.latest_overall_weight_stats     = overall_wt
             self.latest_overall_activation_stats = overall_act
 
-            print("Weight Statistics per tensor:")
-            for name, s in weight_stats.items():
-                print(
-                    f"{name}: stdev {s['stdev']:.6f}, kurtosis {s['kurtosis']:.6f}, "
-                    f"max {s['max']:.6f}, min {s['min']:.6f}, abs_max {s['abs_max']:.6f}"
-                )
-            print("Activation Statistics per tensor:")
-            for name, s in act_stats.items():
-                print(
-                    f"{name}: stdev {s['stdev']:.6f}, kurtosis {s['kurtosis']:.6f}, "
-                    f"max {s['max']:.6f}, min {s['min']:.6f}, abs_max {s['abs_max']:.6f}"
-                )
+            print_model_stats_table(weight_stats, act_stats)
         else:
             act_stats  = {}   # keep API intact
             weight_stats = {}
