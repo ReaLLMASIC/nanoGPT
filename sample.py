@@ -29,6 +29,7 @@ from variations.model_variations import model_variation_dictionary
 
 import lm_eval
 from benchmarks.gpt_lm_eval_wrapper import NanoGPTLM
+from benchmarks import run_all
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Inference from trained models")
@@ -413,6 +414,7 @@ def sample_with_existing_model(
     iter_num: Optional[int] = None,
     best_val_loss: Optional[float] = None,
     run_name: Optional[str] = None,
+    writer: Optional[object] = None,
 ):
     """
     Generate text from an already-loaded GPT model.
@@ -425,6 +427,8 @@ def sample_with_existing_model(
         • list  – run once per k in the list (duplicates filtered).
     colorize_mode :
         "minmax" | "softmax" | "softmax_top_k" | "dot_product" | **"rank"** | "all"
+    writer : torch.utils.tensorboard.SummaryWriter | None
+        When provided, dataset metrics for each top-k sample will be logged to TensorBoard.
     """
 
     console = Console()
@@ -616,6 +620,17 @@ def sample_with_existing_model(
             plain_text = decode(x[0].tolist())
             if token_boundary is not None:
                 plain_text = plain_text.replace(token_boundary, " ")
+
+            if args and getattr(args, "sample_metrics", False):
+                metrics = run_all(plain_text)
+                metric_str = ", ".join(f"{k}={v:.3f}" for k, v in metrics.items())
+                console.print(
+                    f"\n[bold magenta]Metrics ({k_tag}, sample {sample_idx+1}):[/bold magenta] {metric_str}"
+                )
+                if writer is not None and getattr(args, "tensorboard_log", False):
+                    for mk, mv in metrics.items():
+                        # group top-k runs on a single chart per metric
+                        writer.add_scalars(f"sample_metrics/{mk}", {k_tag: mv}, iter_num or 0)
 
             # ---------- colourised outputs ----------------------------------
             if colorize_output:
